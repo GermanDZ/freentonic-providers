@@ -1,0 +1,130 @@
+version: 1
+
+config:
+  key: ing
+  default_lookback_days: 90
+
+secrets:
+  USER_DNI:
+    prompt: "ING DNI / user ID"
+  USER_BIRTHDAY_DD:
+    prompt: "ING birthday day (DD)"
+  USER_BIRTHDAY_MM:
+    prompt: "ING birthday month (MM)"
+  USER_BIRTHDAY_YYYY:
+    prompt: "ING birthday year (AAAA)"
+  USER_PIN:
+    prompt: "ING full PIN (all digits, e.g. 123456)"
+
+pipeline:
+  - connect
+  - login
+  - post_login
+  - capture_credentials
+
+phases:
+  connect:
+    - action: navigate
+      url: "https://ing.ingdirect.es/app-login/"
+    - action: wait_url
+      includes: "ingdirect"
+      timeout: 15
+  login:
+    - action: wait_for_first_of
+      selectors:
+        - "input[name=\"document\"]"
+        - ".container-pinpad"
+      timeout: 30
+    - action: fill_if_present
+      selector: "input[name=\"document\"]"
+      value: "secret(USER_DNI)"
+    - action: fill_if_present
+      selector: "input[placeholder=\"DD\"]"
+      value: "secret(USER_BIRTHDAY_DD)"
+    - action: fill_if_present
+      selector: "input[placeholder=\"MM\"]"
+      value: "secret(USER_BIRTHDAY_MM)"
+    - action: fill_if_present
+      selector: "input[placeholder=\"AAAA\"]"
+      value: "secret(USER_BIRTHDAY_YYYY)"
+    - action: click_if_present
+      selector: "input[name=\"isRemembered\"]"
+    - action: click_if_present
+      selector: "ing-button[data-element-click-id=\"ENTER_CREDENTIALS_CLICK\"]"
+    - action: wait_for_shadow_selector
+      host: "ing-pin-pad"
+      selector: ".dots-indicator"
+      timeout: 30
+    - action: enter_pin_pad
+      selector: "ing-pin-pad"
+      pin: "secret(USER_PIN)"
+    - action: wait_url
+      includes: "pfm/#overall-position"
+      timeout: 120
+  post_login:
+    - action: navigate
+      url: "https://ing.ingdirect.es/pfm/#overall-position/inicio"
+    - action: wait_network_idle
+      seconds: 5
+  capture_credentials:
+    - action: capture_cookie_header
+      host: "ing.ingdirect.es"
+      path: "/genoma_api/rest/"
+      as: cookie
+
+credentials:
+  require:
+    - cookie
+  validate:
+    - key: cookie
+      not_empty: true
+      contains: "genoma-session-id="
+  map:
+    - from: cookie
+      as: cookie
+      log_extra: "{cookie_cookie_count} cookies"
+
+api_client:
+  base_url: "https://ing.ingdirect.es"
+  credentials:
+    - cookie
+  batch_keys:
+    - transactions
+    - movements
+    - elements
+    - resultList
+  date_format: "%d/%m/%Y"
+  auth_headers:
+    Cookie:            "{cookie}"
+    genoma-session-id: "{genoma_session_id}"
+    Content-Type:      "application/json"
+    Origin:            "https://ing.ingdirect.es"
+    Referer:           "https://ing.ingdirect.es/"
+  derived_credentials:
+    genoma_session_id:
+      from: cookie
+      regex: 'genoma-session-id=([^;]+)'
+      capture: 1
+  endpoints:
+    - name: fetch_products_legacy_shape
+      method: GET
+      path: "/genoma_api/rest/products"
+      response:
+        extract_batch: [products, elements]
+    - name: legacy_fetch_all_movements
+      method: GET
+      path: "/genoma_api/rest/products/{v1id}/movements"
+      params:
+        fromDate: "{from_date|date}"
+        limit:    100
+        offset:   "{offset}"
+      pagination: offset
+      limit: 100
+
+extract:
+  ruby: ./extractor.rb
+  class: Freentonic::Providers::Ing::Extractor
+
+normalize:
+  ruby: ./normalizer.rb
+  class: Freentonic::Providers::Ing::Normalizer

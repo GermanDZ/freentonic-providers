@@ -1,0 +1,121 @@
+version: 1
+
+config:
+  key: unicaja
+  default_lookback_days: 30
+
+secrets:
+  USER_LOGIN:
+    prompt: "Unicaja user / DNI"
+  USER_PASSWORD:
+    prompt: "Unicaja password"
+
+pipeline:
+  - connect
+  - login
+  - post_login
+  - capture_credentials
+
+phases:
+  connect:
+    - action: navigate
+      url: "https://univia.unicajabanco.es/login"
+    - action: wait_url
+      includes: "univia"
+      timeout: 15
+  login:
+    - action: wait_for_selector
+      selector: "input#username"
+      timeout: 15
+    - action: fill
+      selector: "input#username"
+      value: "secret(USER_LOGIN)"
+    - action: fill
+      selector: "input#pwd"
+      value: "secret(USER_PASSWORD)"
+    - action: click
+      selector: "button[type='submit']"
+    - action: wait_url
+      includes: "posicion-global"
+      timeout: 120
+  post_login:
+    - action: wait_network_idle
+      seconds: 5
+  capture_credentials:
+    - action: reload
+    - action: wait
+      seconds: 4
+    - action: capture_header
+      name: "tokencsrf"
+      as: "tokencsrf"
+      retries: 3
+      interval_seconds: 2
+    - action: capture_cookie_header
+      host: "univia.unicajabanco.es"
+      path: "/services/rest/"
+      as: "cookie"
+
+credentials:
+  require:
+    - cookie
+    - tokencsrf
+  map:
+    - from: cookie
+      as: cookie
+    - from: tokencsrf
+      as: tokencsrf
+
+api_client:
+  base_url: "https://univia.unicajabanco.es"
+  api_root: "/services/rest/api"
+  expected_content_type: "application/json"
+  credentials:
+    keys: [cookie, tokencsrf]
+    required: true
+  batch_keys:
+    - movimientos
+    - listaMovimientos
+  date_format: "%Y-%m-%d"
+  auth_headers:
+    Cookie:          "{cookie}"
+    tokencsrf:       "{tokencsrf}"
+    Accept:          "application/json, text/plain, */*"
+    Accept-Language: "es-ES,es;q=0.9"
+    Origin:          "https://univia.unicajabanco.es"
+    Referer:         "https://univia.unicajabanco.es/posicion-global"
+  endpoints:
+    - name: fetch_listacuentas
+      method: GET
+      path: "/productos/listacuentas"
+    - name: fetch_listatarjetas
+      method: GET
+      path: "/productos/listatarjetas"
+    - name: fetch_listaprestamos
+      method: GET
+      path: "/productos/listaprestamos"
+    - name: fetch_all_account_movements
+      method: POST
+      path: "/cuentas/movimientos"
+      form:
+        ppp:        "{ppp}"
+        fechaDesde: "{fecha_desde|date}"
+        impDesde:   "0"
+      response:
+        extract_batch: [movimientos, listaMovimientos]
+    - name: fetch_all_card_movements
+      method: POST
+      path: "/tarjetas/movimientos/listadoMovimientos/v2"
+      form:
+        ppp:        "{ppp}"
+        fechaDesde: "{fecha_desde|date}"
+        impDesde:   "0"
+      response:
+        extract_batch: [movimientos, listaMovimientos]
+
+extract:
+  ruby: ./extractor.rb
+  class: Freentonic::Providers::Unicaja::Extractor
+
+normalize:
+  ruby: ./normalizer.rb
+  class: Freentonic::Providers::Unicaja::Normalizer
