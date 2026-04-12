@@ -130,7 +130,7 @@ module Freentonic
         end
 
         def extract_amount_cents(mv)
-          raw = mv["importe"] || mv["cantidad"] || mv["amount"]
+          raw = mv["importe"] || mv["importeMovimiento"] || mv["cantidad"] || mv["amount"]
           return nil if raw.nil?
           float = case raw
                   when Hash    then (raw["cantidad"] || raw["importe"] || raw["value"])&.to_f
@@ -141,7 +141,7 @@ module Freentonic
         end
 
         def extract_currency(mv)
-          raw = mv["importe"]
+          raw = mv["importe"] || mv["importeMovimiento"]
           return raw["divisa"] || raw["moneda"] if raw.is_a?(Hash)
           mv["divisa"] || mv["moneda"]
         end

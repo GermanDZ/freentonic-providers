@@ -14,6 +14,7 @@ pipeline:
   - connect
   - login
   - post_login
+  - pre_arm_history
   - capture_credentials
 
 phases:
@@ -41,6 +42,105 @@ phases:
   post_login:
     - action: wait_network_idle
       seconds: 5
+  # Arms the session so the /apis/externo/.../busqueda endpoint will return
+  # history older than ~30 days. Unicaja requires a UI-driven search with a
+  # far-back from-date that triggers an SMS OTP, which the user types in.
+  # Every step is gated on lookback_days > 30 — for short runs the whole
+  # phase is silently skipped and we fall through to capture_credentials.
+  pre_arm_history:
+    - action: click
+      selector: "a[data-testid='wrapper-card-sLink'][href*='/cuentas/'][href$='/movimientos']"
+      when_context: { lookback_days: { gt: 30 } }
+    - action: wait_url
+      includes: "/movimientos"
+      timeout: 30
+      when_context: { lookback_days: { gt: 30 } }
+    # wait_url fires as soon as the URL matches, but React is still
+    # hydrating — clicking too early leaves the click event with no
+    # handler attached, so the button looks clicked but nothing happens.
+    # Let the page go idle before we try to interact with it.
+    - action: wait_network_idle
+      seconds: 3
+      when_context: { lookback_days: { gt: 30 } }
+    # Opens the "Buscar movimientos" action sheet. Scoped to the
+    # movements content container just in case; diagnostic confirmed
+    # only one Buscar button is reachable so the scope is belt-and-
+    # suspenders, not strictly required.
+    - action: click_text
+      text: "Buscar"
+      role: button
+      within: "div[class*='BlockMovements']"
+      timeout: 30
+      when_context: { lookback_days: { gt: 30 } }
+    # Give the action sheet a beat to mount + animate open before we
+    # start polling for its inputs.
+    - action: wait
+      seconds: 1
+      when_context: { lookback_days: { gt: 30 } }
+    - action: wait_for_selector
+      selector: "input[name='dateFrom']"
+      timeout: 15
+      when_context: { lookback_days: { gt: 30 } }
+    # Sentinel from-date: must be >30 days ago (to trigger the OTP) AND
+    # ≤18 months ago (the form's client-side max range — older dates
+    # are rejected as "Fecha fuera de rango"). 01/04/2025 gives ~12
+    # months on the 2026-04-11 baseline, leaving headroom on both sides.
+    # TODO: when this date creeps past the 18-month limit (mid-2026),
+    # either bump it or add a framework template filter like
+    # `{months_ago|12|date}` to compute it dynamically.
+    # clear: true resets the React-controlled pre-filled value before
+    # typing so we replace instead of append.
+    - action: fill
+      selector: "input[name='dateFrom']"
+      value: "01/04/2025"
+      clear: true
+      when_context: { lookback_days: { gt: 30 } }
+    - action: click_text
+      text: "Buscar movimientos"
+      role: button
+      within: "div[class*='StyledActionSheetDesktop']"
+      timeout: 15
+      when_context: { lookback_days: { gt: 30 } }
+    # After the action sheet submits, the movements list re-renders
+    # with a "Autorizar consulta" consent button — clicking it is
+    # what actually triggers the SMS OTP. Without this click, no code
+    # is sent and nothing prompts the user. Scoped to the results
+    # container so we don't match any stray accept buttons elsewhere.
+    - action: wait_network_idle
+      seconds: 3
+      when_context: { lookback_days: { gt: 30 } }
+    - action: click_text
+      text: "Autorizar consulta"
+      role: button
+      within: "div[class*='BlockCardsMovements']"
+      timeout: 30
+      when_context: { lookback_days: { gt: 30 } }
+    # Wait for the "Clave de seguridad" dialog (StyledActionSheetDesktop
+    # titled "Ver movimientos") to mount and its 6-digit input to
+    # render. The field is a tel input with autocomplete="one-time-code".
+    - action: wait_for_selector
+      selector: "input[data-testid='InputSecurityCode']"
+      timeout: 60
+      when_context: { lookback_days: { gt: 30 } }
+    # Prompt the user for the SMS code and type it into the input.
+    # No submit_selector here: the "Firmar" button starts disabled and
+    # React only enables it after 6 digits land in state, so we wait
+    # for the :not([disabled]) state explicitly below before clicking.
+    - action: prompt_stdin_and_fill
+      selector: "input[data-testid='InputSecurityCode']"
+      prompt: "Enter the SMS code Unicaja sent you: "
+      timeout: 300
+      when_context: { lookback_days: { gt: 30 } }
+    - action: wait_for_selector
+      selector: "button[data-testid='signatureModal-button-submit']:not([disabled])"
+      timeout: 10
+      when_context: { lookback_days: { gt: 30 } }
+    - action: click
+      selector: "button[data-testid='signatureModal-button-submit']"
+      when_context: { lookback_days: { gt: 30 } }
+    - action: wait_network_idle
+      seconds: 3
+      when_context: { lookback_days: { gt: 30 } }
   capture_credentials:
     - action: reload
     - action: wait
@@ -67,7 +167,9 @@ credentials:
 
 api_client:
   base_url: "https://univia.unicajabanco.es"
-  api_root: "/services/rest/api"
+  # No api_root — endpoints span two path prefixes:
+  #   /services/rest/api  (standard endpoints)
+  #   /apis/externo       (extended-history busqueda, requires OTP arming)
   expected_content_type: "application/json"
   credentials:
     keys: [cookie, tokencsrf]
@@ -86,25 +188,43 @@ api_client:
   endpoints:
     - name: fetch_listacuentas
       method: GET
-      path: "/productos/listacuentas"
+      path: "/services/rest/api/productos/listacuentas"
     - name: fetch_listatarjetas
       method: GET
-      path: "/productos/listatarjetas"
+      path: "/services/rest/api/productos/listatarjetas"
     - name: fetch_listaprestamos
       method: GET
-      path: "/productos/listaprestamos"
+      path: "/services/rest/api/productos/listaprestamos"
+    # Standard movements endpoint — works for the last ~30 days without
+    # OTP arming.  Always used for the recent-window fetch.
     - name: fetch_all_account_movements
       method: POST
-      path: "/cuentas/movimientos"
+      path: "/services/rest/api/cuentas/movimientos"
       form:
         ppp:        "{ppp}"
         fechaDesde: "{fecha_desde|date}"
         impDesde:   "0"
       response:
         extract_batch: [movimientos, listaMovimientos]
+    # Extended-history endpoint — requires the session to be armed via
+    # pre_arm_history (OTP).  Returns paginated results; the extractor
+    # drives the cursor loop using masMovimientos from the raw response.
+    # No extract_batch: the extractor needs the full response to read
+    # masMovimientos for pagination cursors.
+    - name: fetch_account_movements_page
+      method: POST
+      path: "/apis/externo/unicaja/banca-digital/cuentas/movimientos/busqueda"
+      form:
+        ppp:          "{ppp}"
+        indOperacion: "{ind_operacion}"
+        fechaDesde:   "{fecha_desde|date}"
+        fechaHasta:   "{fecha_hasta|date}"
+        tipologia:    "T"
+        saldoUltMov:  "{saldo_ult_mov}"
+        numUltMov:    "{num_ult_mov}"
     - name: fetch_all_card_movements
       method: POST
-      path: "/tarjetas/movimientos/listadoMovimientos/v2"
+      path: "/services/rest/api/tarjetas/movimientos/listadoMovimientos/v2"
       form:
         ppp:        "{ppp}"
         fechaDesde: "{fecha_desde|date}"
