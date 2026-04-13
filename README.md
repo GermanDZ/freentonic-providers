@@ -12,6 +12,7 @@ sibling Ruby files (`extractor.rb`, `normalizer.rb`) it references.
 | --------- | -------------- | ------ | --------------------------------------------------- |
 | ING España | [`ing/`](ing)     | v1     | Drives the legacy `genoma_api` endpoint.            |
 | Unicaja    | [`unicaja/`](unicaja) | v1     | Drives the Univia REST API. Requires `tokencsrf`.   |
+| Revolut    | [`revolut/`](revolut) | v1     | Drives the Revolut retail API. Cookie auth + app push 2FA. |
 
 ## Usage
 

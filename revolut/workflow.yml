@@ -1,0 +1,140 @@
+version: 1
+
+config:
+  key: revolut
+  default_lookback_days: 90
+
+secrets:
+  USER_EMAIL:
+    prompt: "Revolut email address"
+  USER_PASSCODE:
+    prompt: "Revolut passcode (6-digit PIN)"
+
+pipeline:
+  - connect
+  - login
+  - approve_2fa
+  - post_login
+  - capture_credentials
+
+phases:
+  connect:
+    - action: navigate
+      url: "https://app.revolut.com/home"
+    # Three possible states after navigation:
+    #   1. SSO fresh login — "Continue with email" button visible
+    #   2. SSO remembered email — passcode input visible directly
+    #   3. Already logged in — stays at app.revolut.com/home
+    # All SSO states land on sso.revolut.com; logged-in stays on
+    # app.revolut.com. Just wait for the page to settle.
+    - action: wait_network_idle
+      seconds: 3
+
+  login:
+    # If already logged in, these _if_present actions are no-ops.
+    # If on SSO, click "Email", fill credentials, approve on phone.
+    - action: click_if_present
+      selector: "button[aria-label='Continue with email']"
+    - action: fill_if_present
+      selector: "input[type='email'], input[name='email'], input[autocomplete='email']"
+      value: "secret(USER_EMAIL)"
+    - action: click_if_present
+      selector: "button[type='submit']"
+    # Passcode auto-submits after 6 digits — no Continue button needed.
+    - action: fill_if_present
+      selector: "input[type='password'], input[type='tel'], input[inputmode='numeric']"
+      value: "secret(USER_PASSCODE)"
+
+  approve_2fa:
+    # After passcode, Revolut sends a push to the mobile app.
+    # wait_url for the /home path (not just the domain) ensures we
+    # wait for the actual post-login redirect, not match the SSO URL.
+    # If already logged in, the URL is already app.revolut.com/home.
+    - action: wait_url
+      includes: "app.revolut.com/home"
+      timeout: 300
+
+  post_login:
+    # Let the app finish loading and making initial API calls.
+    # The extra wait ensures the PKCE token exchange and initial
+    # data fetches complete before we capture credentials.
+    - action: wait_network_idle
+      seconds: 8
+
+  capture_credentials:
+    # Auth mechanism is unknown from the HAR — capture everything
+    # potentially relevant. Prune after the first live run reveals
+    # which mechanism actually carries auth.
+    - action: capture_cookie_header
+      host: "app.revolut.com"
+      path: "/api/"
+      as: cookie
+    - action: capture_header
+      name: "x-device-id"
+      as: x_device_id
+      retries: 5
+      interval_seconds: 2
+
+credentials:
+  require:
+    - cookie
+  validate:
+    - key: cookie
+      not_empty: true
+  map:
+    - { from: cookie, as: cookie }
+    - { from: x_device_id, as: x_device_id }
+
+api_client:
+  base_url: "https://app.revolut.com"
+  api_root: "/api/retail"
+  credentials: [cookie, x_device_id]
+  auth_headers:
+    Cookie: "{cookie}"
+    x-device-id: "{x_device_id}"
+    x-browser-application: "WEB_CLIENT"
+    x-client-version: "100.0"
+  batch_keys: []
+  date_format: "%Y-%m-%d"
+  endpoints:
+    - name: fetch_wallet
+      method: GET
+      path: "/user/current/wallet"
+    - name: fetch_wallets
+      method: GET
+      path: "/wallets"
+    - name: fetch_accounts
+      method: GET
+      path: "/user/current/accounts"
+    - name: fetch_bank_details
+      method: GET
+      path: "/bank-accounts/account-details"
+      params:
+        currency: "{currency}"
+    - name: fetch_cards
+      method: GET
+      path: "/my-card/all"
+    - name: fetch_card_detail
+      method: GET
+      path: "/my-card/{card_id}/v2"
+    - name: fetch_vaults
+      method: GET
+      path: "/user/current/money-boxes"
+    - name: fetch_transactions_page
+      method: GET
+      path: "/user/current/transactions/last"
+      params:
+        count: 50
+        internalPocketId: "{pocket_id}"
+        to: "{to}"
+    - name: fetch_cashback
+      method: GET
+      path: "/cashback"
+
+extract:
+  ruby: ./extractor.rb
+  class: Freentonic::Providers::Revolut::Extractor
+
+normalize:
+  ruby: ./normalizer.rb
+  class: Freentonic::Providers::Revolut::Normalizer
