@@ -265,32 +265,36 @@ bundle exec rake test  # all providers, not just yours
 
 ---
 
-## Common Pitfalls (ranked by frequency during Revolut development)
+## Common Pitfalls (ranked by frequency across Revolut + Fintonic development)
 
 | # | Pitfall | Frequency | Fix |
 |---|---|---|---|
-| 1 | Wrong CSS selectors | 3 times | Ask for screenshot/DOM BEFORE coding |
-| 2 | Missing framework action | 2 times | Check ING workflow for valid actions |
-| 3 | Session persistence not handled | 2 times | Use `_if_present` pattern from day one |
-| 4 | Amount units wrong | 1 time | Inspect `--dump-raw` before normalizer |
-| 5 | Pagination param not in YAML | 1 time | Cursor params must be declared in endpoint YAML |
-| 6 | Auto-submit not detected | 1 time | Check HAR timing between steps |
-| 7 | Nested response structure | 1 time | Always inspect actual response, don't assume flat |
-| 8 | `wait_url` too broad | 1 time | Use specific path, not just domain |
-| 9 | Invalid CSS pseudo-selector | 1 time | Only use standard CSS, no `:has-text()` |
-| 10 | API endpoint needs extra params | 1 time | Error message is the clue — read it |
+| 1 | Wrong CSS selectors | 4 times | Ask for screenshot/DOM BEFORE coding |
+| 2 | Session persistence not handled | 3 times | Use `_if_present` pattern from day one; handle 3+ login states |
+| 3 | Missing framework action | 2 times | Read `docs/workflow-actions.md` — full reference in framework repo |
+| 4 | `{offset}` is a reserved token | 2 times | Never use `{offset}` in endpoint params — it's intercepted by the pagination engine and returns `nil`. Use `{page_offset}` instead |
+| 5 | `batch_keys` silently unwraps responses | 1 time | If your extractor reads `result["count"]` or other metadata alongside the batch, do NOT set `batch_keys` — it strips the wrapper and returns only the array |
+| 6 | Response structure different from docs/old code | 2 times | Always use `record_requests` + `dump_requests` to inspect actual API responses with bodies; never trust old scripts or assume shapes |
+| 7 | Amount units wrong | 1 time | Inspect `--dump-raw` before normalizer |
+| 8 | Pagination param not in YAML | 1 time | All params must be declared in endpoint YAML |
+| 9 | Auto-submit not detected | 1 time | Check HAR timing between steps |
+| 10 | `wait_url` too broad | 1 time | Use specific path, not just domain |
+| 11 | Button ID shared across pages | 1 time | Use `:has()` scoping: `body:has(#emailInput) #submitButton` |
+| 12 | `click_if_present` fires on wrong page | 1 time | When a button ID exists on multiple pages, use `body:has(#context-element) #button` to scope the click |
 
 ---
 
 ## What Would Make This Faster Next Time
 
-1. **Ask for login page screenshot BEFORE any selectors** — saves 2-3 failed iterations (~10 min)
+1. **Ask for login page screenshot/DOM BEFORE any selectors** — saves 2-3 failed iterations (~10 min)
 2. **Use the `wait_network_idle` + `_if_present` template from the start** — don't try `wait_for_first_of` for session detection
 3. **Always `--dump-raw` before normalizer** — never assume amount units or nesting
-4. **Check framework action inventory upfront** — reference ING's workflow.yml for valid actions
-5. **Declare ALL endpoint params in YAML** — including pagination cursors
-
-With these optimizations, the next provider should take ~45 min instead of ~75 min — mostly saving time on login flow iteration.
+4. **Read `docs/workflow-actions.md` in the framework repo** — the full action reference lives there, not in provider code
+5. **Declare ALL endpoint params in YAML** — including pagination cursors. Never use `{offset}` — it's reserved
+6. **Use `record_requests` + `dump_requests` early** — don't rely on external HAR captures. The framework's built-in capture gets response bodies reliably and works within the authenticated session
+7. **Don't set `batch_keys` unless you only need the array** — if your extractor needs response metadata (count, cursors, etc.), omit `batch_keys` and read the full response hash
+8. **Test with `--isolated` for fresh state, then without for session persistence** — both must work
+9. **Handle ALL login states from day one** — fresh, remembered-email, and active-session. Use `wait_for_first_of` with selectors for each state, then `_if_present` for every action
 
 ---
 
@@ -302,3 +306,21 @@ The complete working implementation serves as a reference for future providers:
 - `revolut/extractor.rb` — multi-product fetch (wallet, bank details per currency, cards, vaults), cursor-paginated transactions with safety cap
 - `revolut/normalizer.rb` — handles integer cents (pockets/transactions), Hash amounts (vaults), Unix ms dates, deeply nested IBAN
 - `revolut/test/` — credential extraction + normalizer tests with real data shapes
+
+## Reference: Fintonic Provider Final State
+
+Fintonic is an aggregator (not a bank) with a different set of challenges:
+
+- `fintonic/workflow.yml` — 3-state login (email+PIN, remembered-email+PIN, straight-to-2FA), cookie banner dismissal, SMS 2FA with `prompt_stdin_and_fill`, Bearer token capture. Uses `:has()` CSS selector to scope button clicks: `body:has(#usernameForm) #loginButton`
+- `fintonic/extractor.rb` — single `/transaction/list` endpoint fetches all banks at once (no per-bank iteration needed). Manual offset pagination with `{page_offset}` (not `{offset}`!). Separate read + unread fetches
+- `fintonic/normalizer.rb` — category tree is a flat hash (`{id: {name, ancestors}}`) not an array. Amounts are already in cents. `CREDITCARD` type mapping (not `CREDIT_CARD`)
+- `fintonic/test/` — credential + normalizer tests
+
+### Key Fintonic-specific lessons:
+
+1. **`{offset}` is reserved** — the framework's `ep_interpolate_val` intercepts it for automatic pagination. Use `{page_offset}` for manual pagination
+2. **Don't set `batch_keys`** when your extractor needs `result["count"]` for pagination — `batch_keys` unwraps the response and you lose the metadata
+3. **Use `record_requests` + `dump_requests`** to inspect API responses instead of relying on Chrome HAR exports (which often lack response bodies)
+4. **The `investigate` phase pattern** — add to pipeline temporarily, record traffic, navigate key pages, dump to ndjson, pause for manual exploration. Remove before committing
+5. **PIN entry with individual inputs** — use `fill` per input (`input#password0` through `#password3`) with `secret(USER_PIN[N])` indexing
+6. **Button shared across pages** — `button#loginButton` existed on both email and PIN pages. Fixed with `body:has(#usernameForm) #loginButton` to only click when email form is present

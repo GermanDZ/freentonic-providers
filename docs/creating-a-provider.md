@@ -158,12 +158,37 @@ normalize:
   Network panel shows the exact selectors, URL shapes, and auth headers
   you need.
 - **Pipeline actions are documented in**
-  [`lib/freentonic/browser_workflow_runner.rb`](https://github.com/GermanDZ/freentonic/blob/main/lib/freentonic/browser_workflow_runner.rb) —
-  search for the `case action` branch.
+  the framework's `docs/workflow-actions.md` and the individual
+  `docs/workflow-action-*.md` files. Key actions include `pause`,
+  `record_requests`, `dump_requests`, `enter_digits`, and
+  `capture_response_json` — read the reference before assuming an action
+  doesn't exist.
 - `secret(NAME)` works inside strings and inside arrays of strings
   (e.g. `digits:` inputs), and is resolved recursively through hashes.
+  You can index into a secret: `secret(PIN[0])` returns the first character.
 - Use `--isolated` during initial authoring so your tweaks to the
   workflow don't accumulate Chrome state that's hard to reason about.
+
+### YAML gotchas
+
+- **`{offset}` is a reserved interpolation token.** The framework
+  intercepts `{offset}` in endpoint params to inject the automatic
+  pagination offset. If you use it as a kwarg name for manual
+  pagination, it will silently resolve to `nil` and your requests will
+  always fetch page 0. Use `{page_offset}` instead.
+- **`batch_keys` unwraps responses.** If you set
+  `batch_keys: [resultList]`, parameterized endpoint methods return the
+  extracted array — NOT the full response hash. If your extractor needs
+  metadata like `result["count"]` alongside the batch, omit `batch_keys`
+  and read the full response.
+- **Use `_if_present` for multi-state login flows.** Banks remember
+  sessions in various ways — email remembered, PIN skipped, straight to
+  2FA. Use `wait_for_first_of` to detect which state, then
+  `fill_if_present` / `click_if_present` so unused steps are no-ops.
+- **Scope shared button IDs with `:has()`.** If a button ID like
+  `#loginButton` exists on multiple pages, use
+  `body:has(#emailInput) #loginButton` to only click it when the email
+  form is present. Chrome supports `:has()` since v105.
 
 ## 3. Write the extractor
 
@@ -483,8 +508,8 @@ Before you commit your provider, walk through this list:
 
 ## Reference providers
 
-If you're unsure how to model something, read the two built-in
-providers — they cover two different styles of API:
+If you're unsure how to model something, read the existing providers —
+they cover different styles of API and login flow:
 
 - [`ing/`](../ing) — uses the legacy `genoma_api` shape. Credit card
   balance is recomputed from movement legs. Shows offset-based
@@ -493,4 +518,16 @@ providers — they cover two different styles of API:
 - [`unicaja/`](../unicaja) — uses the Univia REST API. Shows a
   POST-form API client, multiple product types (cuentas + tarjetas +
   préstamos) in one extractor, credit-card filtering logic, and the
-  `tokencsrf` header capture flow.
+  `tokencsrf` header capture flow. Manual cursor pagination in the
+  extractor for extended history.
+- [`revolut/`](../revolut) — PKCE OAuth login, push-notification 2FA,
+  cookie+header auth. Multi-product fetch (wallet, cards, vaults) with
+  cursor-paginated transactions. Shows `capture_cookie_header` for
+  httpOnly cookies.
+- [`fintonic/`](../fintonic) — aggregator with Bearer token auth. Shows
+  3-state login handling (`wait_for_first_of` + `_if_present`), SMS 2FA
+  via `prompt_stdin_and_fill`, per-digit PIN entry via `secret(PIN[N])`
+  indexing, `:has()` scoped clicks, manual offset pagination with
+  `{page_offset}` (avoiding the reserved `{offset}`), and the
+  `record_requests` + `dump_requests` investigation pattern. Also shows
+  handling a flat category hash vs the more common nested array.
