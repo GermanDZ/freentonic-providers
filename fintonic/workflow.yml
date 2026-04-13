@@ -1,0 +1,168 @@
+version: 1
+
+config:
+  key: fintonic
+  default_lookback_days: 365
+
+secrets:
+  USER_EMAIL:
+    prompt: "Fintonic email"
+  USER_PIN:
+    prompt: "Fintonic 4-digit PIN"
+
+pipeline:
+  - connect
+  - login
+  - approve_2fa
+  - post_login
+  - capture_credentials
+  # - investigate  # uncomment for debugging
+
+phases:
+  connect:
+    - action: navigate
+      url: "https://www.fintonic.com/private/login"
+    - action: wait_network_idle
+      seconds: 3
+
+  login:
+    # Dismiss cookie banner
+    - action: click_if_present
+      selector: "button#CybotCookiebotDialogBodyButtonAccept"
+
+    # Detect which page we land on: email, PIN, or straight to 2FA
+    - action: wait_for_first_of
+      selectors:
+        - "input#usernameForm"
+        - "input#password0"
+        - "input.MuiInputBase-input.MuiInput-input"
+      timeout: 15
+
+    # Step 1: Email (skipped if remembered)
+    - action: fill_if_present
+      selector: "input#usernameForm"
+      value: "secret(USER_EMAIL)"
+    - action: click_if_present
+      selector: "body:has(#usernameForm) #loginButton"
+
+    # Step 2: 4-digit PIN (skipped if session goes straight to 2FA)
+    - action: fill_if_present
+      selector: "input#password0"
+      value: "secret(USER_PIN[0])"
+    - action: fill_if_present
+      selector: "input#password1"
+      value: "secret(USER_PIN[1])"
+    - action: fill_if_present
+      selector: "input#password2"
+      value: "secret(USER_PIN[2])"
+    - action: fill_if_present
+      selector: "input#password3"
+      value: "secret(USER_PIN[3])"
+    - action: click_if_present
+      selector: "button#passwordButton"
+    - action: wait_network_idle
+      seconds: 3
+
+  approve_2fa:
+    # SMS code sent to user's phone — prompt in terminal and fill.
+    - action: prompt_stdin_and_fill
+      selector: "input.MuiInputBase-input.MuiInput-input"
+      prompt: "Enter the SMS code Fintonic sent to your phone: "
+      timeout: 300
+    # Button enables after 4 digits are entered.
+    - action: wait_for_selector
+      selector: "button.MuiButton-containedPrimary:not([disabled])"
+      timeout: 10
+    - action: click
+      selector: "button.MuiButton-containedPrimary:not([disabled])"
+    - action: wait_url
+      includes: "/private/"
+      timeout: 30
+
+  post_login:
+    # Navigate to a page that triggers API calls so we can capture the token.
+    - action: navigate
+      url: "https://www.fintonic.com/private/transactions"
+    - action: wait_network_idle
+      seconds: 8
+
+  capture_credentials:
+    - action: capture_header
+      name: "Authorization"
+      as: bearer_token
+      retries: 5
+      interval_seconds: 2
+
+  investigate:
+    - action: record_requests
+      url_matches:
+        - "api.fintonic.com"
+      include_response_body: true
+      max_body_bytes: 131072
+
+    - action: navigate
+      url: "https://www.fintonic.com/private/transactions"
+    - action: wait_network_idle
+      seconds: 5
+
+    - action: navigate
+      url: "https://www.fintonic.com/private/accounts"
+    - action: wait_network_idle
+      seconds: 5
+
+    - action: dump_requests
+      path: "/tmp/fintonic_capture.ndjson"
+      format: "ndjson"
+      reset: true
+
+    - action: pause
+      message: "Navigate to any other pages you want to capture, then press Enter."
+      timeout: 600
+
+    - action: dump_requests
+      path: "/tmp/fintonic_explore.ndjson"
+      format: "ndjson"
+
+credentials:
+  require:
+    - bearer_token
+  validate:
+    - key: bearer_token
+      not_empty: true
+      contains: "Bearer "
+  map:
+    - { from: bearer_token, as: bearer_token }
+
+api_client:
+  base_url: "https://api.fintonic.com"
+  api_root: "/finapi/rest"
+  credentials: [bearer_token]
+  auth_headers:
+    Authorization: "{bearer_token}"
+    Accept:        "application/vnd.fintonic-v7+json"
+    psd2_support:  "true"
+  date_format: "%Y-%m-%d"
+  endpoints:
+    - name: fetch_date_range
+      method: GET
+      path: "/transaction/olderNewerTransactionUserDate"
+    - name: fetch_categories
+      method: GET
+      path: "/category/tree"
+    - name: fetch_transactions
+      method: GET
+      path: "/transaction/list"
+      params:
+        pageLimit:  "{page_limit}"
+        pageOffset: "{page_offset}"
+        beginDate:  "{begin_date}"
+        endDate:    "{end_date}"
+        read:       "{read_flag}"
+
+extract:
+  ruby: ./extractor.rb
+  class: Freentonic::Providers::Fintonic::Extractor
+
+normalize:
+  ruby: ./normalizer.rb
+  class: Freentonic::Providers::Fintonic::Normalizer
