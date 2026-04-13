@@ -56,8 +56,6 @@ phases:
     - action: fill_if_present
       selector: "input[placeholder=\"MM\"]"
       value: "secret(USER_BIRTHDAY_MM)"
-    - action: simulate_human
-      duration: 3
     - action: fill_if_present
       selector: "input[placeholder=\"AAAA\"]"
       value: "secret(USER_BIRTHDAY_YYYY)"
