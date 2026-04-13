@@ -18,6 +18,7 @@ secrets:
 
 pipeline:
   - connect
+  - dismiss_cookie_banner
   - login
   - post_login
   - capture_credentials
@@ -29,6 +30,17 @@ phases:
     - action: wait_url
       includes: "ingdirect"
       timeout: 15
+    - action: simulate_human
+      duration: 5
+  dismiss_cookie_banner:
+    - action: wait_for_first_of
+      selectors:
+        - "#didomi-notice-agree-button"
+        - "input[name=\"document\"]"
+        - ".container-pinpad"
+      timeout: 30
+    - action: click_if_present
+      selector: "#didomi-notice-agree-button"
   login:
     - action: wait_for_first_of
       selectors:
@@ -44,6 +56,8 @@ phases:
     - action: fill_if_present
       selector: "input[placeholder=\"MM\"]"
       value: "secret(USER_BIRTHDAY_MM)"
+    - action: simulate_human
+      duration: 3
     - action: fill_if_present
       selector: "input[placeholder=\"AAAA\"]"
       value: "secret(USER_BIRTHDAY_YYYY)"
@@ -58,6 +72,9 @@ phases:
     - action: enter_pin_pad
       selector: "ing-pin-pad"
       pin: "secret(USER_PIN)"
+    - action: note_if_selector
+      selector: "push-notification-page[data-page-id=\"NOTIFICATION_PUSH\"]"
+      message: "⏳ ING requires 2FA — open the ING app on your phone and approve the login notification."
     - action: wait_url
       includes: "pfm/#overall-position"
       timeout: 120
