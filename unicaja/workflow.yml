@@ -12,6 +12,7 @@ secrets:
 
 pipeline:
   - connect
+  - dismiss_cookie_banner
   - login
   - post_login
   - pre_arm_history
@@ -24,6 +25,18 @@ phases:
     - action: wait_url
       includes: "univia"
       timeout: 15
+  dismiss_cookie_banner:
+    - action: wait
+      seconds: 5
+    - action: wait_for_first_of
+      selectors:
+        - "#onetrust-pc-btn-handler"
+        - "input#username"
+      timeout: 30
+    - action: click_if_present
+      selector: "#onetrust-pc-btn-handler"
+    - action: click_if_present
+      selector: ".ot-pc-refuse-all-handler"
   login:
     - action: wait_for_selector
       selector: "input#username"
