@@ -3,6 +3,11 @@ version: 1
 config:
   key: unicaja
   default_lookback_days: 30
+  error_signals:
+    - text: "Ha ocurrido un error. Por favor, inténtelo de nuevo más tarde"
+      message: "Cybersecurity blocked the login attempt"
+    - selector: "div[data-testid='snackbar-fixed-container'] div[mode='WARNING']"
+      message: "Cybersecurity blocked the login attempt"
 
 secrets:
   USER_LOGIN:
@@ -33,6 +38,8 @@ phases:
         - "#onetrust-pc-btn-handler"
         - "input#username"
       timeout: 30
+    - action: simulate_human
+      duration: 3
     - action: click_if_present
       selector: "#onetrust-pc-btn-handler"
     - action: click_if_present
