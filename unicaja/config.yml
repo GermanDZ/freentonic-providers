@@ -1,0 +1,12 @@
+# Per-provider declarative config for Unicaja.
+#
+# Loaded by Freentonic::Providers::NormalizerBase#provider!(__dir__).
+# Top-level keys become UPCASE class constants on the normalizer.
+
+institution: unicaja
+scraper_version: unicaja/0.2
+
+# Spanish-format dates dominate Unicaja's feed; hint Helpers#parse_date
+# so ambiguous DD/MM/YYYY strings aren't flipped.
+unicaja_date_formats:
+  - "%d/%m/%Y"

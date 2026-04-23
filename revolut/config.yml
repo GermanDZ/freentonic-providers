@@ -1,0 +1,8 @@
+# Per-provider declarative config for Revolut.
+#
+# Loaded by Freentonic::Providers::NormalizerBase#provider!(__dir__).
+# Top-level keys become UPCASE class constants on the normalizer
+# (so `institution: revolut` becomes `INSTITUTION = "revolut"`).
+
+institution: revolut
+scraper_version: revolut/0.2

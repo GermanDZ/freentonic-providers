@@ -4,22 +4,15 @@ require "date"
 require "digest"
 require "bigdecimal"
 require "freentonic"
-Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Unicaja
-      class Normalizer < Freentonic::Normalizers::Base
-        include Freentonic::Providers::Helpers
-        Builder = Freentonic::Providers::CanonicalBuilder
-        LegacyKeys = Freentonic::Providers::LegacyKeys
-
-        INSTITUTION = "unicaja"
-        SCRAPER_VERSION = "unicaja/0.2"
-
-        # Spanish-format dates dominate Unicaja's feed; hint the helper
-        # so ambiguous DD/MM/YYYY strings aren't flipped.
-        UNICAJA_DATE_FORMATS = ["%d/%m/%Y"].freeze
+      class Normalizer < Freentonic::Providers::NormalizerBase
+        provider!(__dir__)
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, UNICAJA_DATE_FORMATS
+        # come from unicaja/config.yml. Builder, LegacyKeys, Helpers
+        # inherited.
 
         def call(raw, context: {})
           @cuenta_movements  = raw["cuenta_movements"] || {}

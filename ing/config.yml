@@ -8,6 +8,14 @@
 institution: ing
 scraper_version: ing/0.2
 
+# Spanish-format dates dominate ING's feed; hint Helpers#parse_date so
+# DD/MM is not flipped for months ≤ 12.
+ing_date_formats:
+  - "%d/%m/%Y"
+
+# Source-side status string indicating a movement is pending settlement.
+ing_pending_status: "Pendiente de liquidar"
+
 # Numeric ING product type → canonical kind. nil means "not balance-bearing"
 # and the product is dropped before reaching the canonical pipeline.
 kind_by_product_type:

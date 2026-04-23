@@ -4,28 +4,15 @@ require "date"
 require "bigdecimal"
 require "freentonic"
 require_relative "extractor"
-Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Ing
-      class Normalizer < Freentonic::Normalizers::Base
-        include Freentonic::Providers::Helpers
-        Builder = Freentonic::Providers::CanonicalBuilder
-        LegacyKeys = Freentonic::Providers::LegacyKeys
-
-        # Spanish-format dates dominate ING's feed; hint the helper so
-        # Date.parse doesn't flip DD/MM for months ≤ 12.
-        ING_DATE_FORMATS = ["%d/%m/%Y"].freeze
-
-        # Provider knobs from ing/config.yml; the Extractor's load_provider!
-        # call has already populated the cache by the time this file loads.
-        CONFIG               = Freentonic::Providers::Config.for(:ing)
-        INSTITUTION          = CONFIG.fetch(:institution)
-        SCRAPER_VERSION      = CONFIG.fetch(:scraper_version)
-        KIND_BY_PRODUCT_TYPE = CONFIG.fetch(:kind_by_product_type)
-
-        ING_PENDING_STATUS = "Pendiente de liquidar"
+      class Normalizer < Freentonic::Providers::NormalizerBase
+        provider!(__dir__)
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_PRODUCT_TYPE,
+        # ING_DATE_FORMATS, ING_PENDING_STATUS all come from
+        # ing/config.yml. Builder, LegacyKeys, Helpers inherited.
 
         def call(raw, context: {})
           accounts, liabilities, transactions = [], [], []

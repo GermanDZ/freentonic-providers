@@ -3,18 +3,14 @@
 require "date"
 require "bigdecimal"
 require "freentonic"
-Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Revolut
-      class Normalizer < Freentonic::Normalizers::Base
-        include Freentonic::Providers::Helpers
-        Builder = Freentonic::Providers::CanonicalBuilder
-        LegacyKeys = Freentonic::Providers::LegacyKeys
-
-        INSTITUTION = "revolut"
-        SCRAPER_VERSION = "revolut/0.2"
+      class Normalizer < Freentonic::Providers::NormalizerBase
+        provider!(__dir__)
+        # CONFIG, INSTITUTION, SCRAPER_VERSION come from revolut/config.yml.
+        # Builder, LegacyKeys, Helpers inherited.
 
         def call(raw, context: {})
           accounts, transactions = [], []

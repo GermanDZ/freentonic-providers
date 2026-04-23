@@ -3,25 +3,15 @@
 require "date"
 require "bigdecimal"
 require "freentonic"
-Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
-Freentonic::Providers::Config.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Fintonic
-      class Normalizer < Freentonic::Normalizers::Base
-        include Freentonic::Providers::Helpers
-        Builder = Freentonic::Providers::CanonicalBuilder
-        LegacyKeys = Freentonic::Providers::LegacyKeys
-
-        # Provider knobs from fintonic/config.yml. The Config loader
-        # uses symbolize_names: true (recursive), so kind_by_type comes
-        # back with symbol keys; transform back to strings since the
-        # lookup is keyed on raw upstream strings like "ACCOUNT" / "CREDIT_CARD".
-        CONFIG          = Freentonic::Providers::Config.for(:fintonic)
-        INSTITUTION     = CONFIG.fetch(:institution)
-        SCRAPER_VERSION = CONFIG.fetch(:scraper_version)
-        KIND_BY_TYPE    = CONFIG.fetch(:kind_by_type).transform_keys(&:to_s).freeze
+      class Normalizer < Freentonic::Providers::NormalizerBase
+        provider!(__dir__)
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_TYPE all
+        # come from fintonic/config.yml. Builder, LegacyKeys, Helpers
+        # inherited.
 
         def call(raw, context: {})
           category_map = build_category_map(raw["categoryTree"] || {})
