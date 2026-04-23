@@ -10,5 +10,6 @@ group :development, :test do
   gem "rake", "~> 13.0"
   # Default gems that Bundler won't autoload unless declared (Ruby 3.4+).
   gem "base64"
+  gem "bigdecimal"
   gem "csv"
 end

@@ -1,108 +1,139 @@
+# frozen_string_literal: true
+
 require "date"
+require "bigdecimal"
+require "freentonic"
+require_relative "../lib/freentonic/providers/canonical_builder"
 
 module Freentonic
   module Providers
     module Revolut
       class Normalizer < Freentonic::Normalizers::Base
-        def call(raw, context: {})
-          accounts = []
-          accounts.concat(build_pocket_accounts(raw))
-          accounts.concat(build_vault_accounts(raw))
+        Builder = Freentonic::Providers::CanonicalBuilder
 
-          {
-            "source_tag" => "revolut_push",
-            "accounts"   => accounts
-          }
+        INSTITUTION = "revolut"
+        SCRAPER_VERSION = "revolut/0.2"
+
+        def call(raw, context: {})
+          accounts, transactions = [], []
+
+          Array(raw["pockets"]).each do |pocket|
+            account = build_pocket_account(pocket, raw["bank_details"] || [])
+            next unless account
+            accounts << account
+
+            (raw["pocket_transactions"]&.[](pocket["id"]) || []).each do |tx|
+              txn = build_transaction(pocket, account, tx)
+              transactions << txn if txn
+            end
+          end
+
+          Array(raw["vaults"]).each do |vault|
+            account = build_vault_account(vault)
+            accounts << account if account
+          end
+
+          Builder.payload(
+            accounts:     accounts,
+            transactions: transactions,
+            scraper_version: SCRAPER_VERSION
+          )
         end
 
         private
 
-        # --- Pockets (main currency wallets) ---
+        # --- Pockets ---------------------------------------------------------
 
-        def build_pocket_accounts(raw)
-          pockets      = raw["pockets"] || []
-          bank_details = raw["bank_details"] || []
-          transactions = raw["pocket_transactions"] || {}
-
-          pockets.filter_map do |pocket|
-            build_pocket_account(pocket, bank_details, transactions[pocket["id"]] || [])
-          end
-        end
-
-        def build_pocket_account(pocket, bank_details, txns)
+        def build_pocket_account(pocket, bank_details)
           pocket_id = pocket["id"]
           return nil unless pocket_id
 
-          {
-            "external_id"    => "revolut_live:pocket:#{pocket_id}",
-            "legacy_uids"    => ["revolut_live:pocket:#{pocket_id}"],
-            "iban"           => find_iban(pocket, bank_details),
-            "kind"           => "asset",
-            "bank_key"       => "revolut",
-            "name"           => pocket["name"] || "Revolut #{pocket['currency']}",
-            "currency"       => pocket["currency"] || "EUR",
-            "balance_cents"  => cents(pocket["balance"]),
-            "balance_source" => "revolut_live:wallet",
-            "metadata"       => {
+          currency = pocket["currency"] || "EUR"
+          Builder.build_account(
+            institution: INSTITUTION,
+            source_id:   "pocket:#{pocket_id}",
+            currency:    currency,
+            name:        pocket["name"] || "Revolut #{currency}",
+            type:        "checking",
+            iban:        find_iban(pocket, bank_details),
+            balance:     { current: Builder.cents_to_amount(cents(pocket["balance"])), timestamp: nil },
+            metadata: {
               "revolut_pocket_id" => pocket_id,
-              "revolut_type"      => pocket["type"]
+              "revolut_type"      => pocket["type"],
+              "balance_source"    => "revolut_live:wallet"
             },
-            "movements"      => txns.filter_map { |tx| build_movement(pocket_id, tx) }
-          }
+            legacy_external_id: "revolut_live:pocket:#{pocket_id}",
+            legacy_uids:        ["revolut_live:pocket:#{pocket_id}"],
+            legacy_bank_key:    "revolut"
+          )
         end
 
-        # --- Vaults / savings ---
-
-        def build_vault_accounts(raw)
-          vaults = raw["vaults"] || []
-          vaults.filter_map { |v| build_vault_account(v) }
-        end
+        # --- Vaults (savings) -----------------------------------------------
 
         def build_vault_account(vault)
           vault_id = vault["id"]
           return nil unless vault_id
 
-          {
-            "external_id"    => "revolut_live:vault:#{vault_id}",
-            "legacy_uids"    => ["revolut_live:vault:#{vault_id}"],
-            "iban"           => nil,
-            "kind"           => "asset",
-            "bank_key"       => "revolut_vault",
-            "name"           => vault["name"] || "Revolut Vault",
-            "currency"       => vault["currency"] || "EUR",
-            "balance_cents"  => cents(vault["balance"] || vault["currentAmount"]),
-            "balance_source" => "revolut_live:vault",
-            "metadata"       => {
+          currency = vault["currency"] || "EUR"
+          balance_cents = cents(vault["balance"] || vault["currentAmount"])
+
+          Builder.build_account(
+            institution: INSTITUTION,
+            source_id:   "vault:#{vault_id}",
+            currency:    currency,
+            name:        vault["name"] || "Revolut Vault",
+            type:        "savings",
+            iban:        nil,
+            balance:     { current: Builder.cents_to_amount(balance_cents), timestamp: nil },
+            metadata: {
               "revolut_vault_id" => vault_id,
-              "revolut_goal"     => vault["goal"]
+              "revolut_goal"     => vault["goal"],
+              "balance_source"   => "revolut_live:vault"
             },
-            "movements"      => []
-          }
+            legacy_external_id: "revolut_live:vault:#{vault_id}",
+            legacy_uids:        ["revolut_live:vault:#{vault_id}"],
+            legacy_bank_key:    "revolut_vault"
+          )
         end
 
-        # --- Movements ---
+        # --- Transactions ---------------------------------------------------
 
-        def build_movement(pocket_id, tx)
+        def build_transaction(pocket, account, tx)
           tx_id = tx["id"] || tx["legId"]
           return nil unless tx_id
 
-          amount = extract_amount_cents(tx)
-          return nil unless amount && amount != 0
+          amount_cents = extract_amount_cents(tx)
+          return nil unless amount_cents && amount_cents != 0
 
           date = parse_revolut_date(tx["startedDate"] || tx["completedDate"] || tx["createdDate"])
           return nil unless date
 
-          {
-            "dedup_key"    => "revolut_live:#{pocket_id}:#{tx_id}",
-            "date"         => date.strftime("%Y-%m-%d"),
-            "amount_cents" => amount,
-            "currency"     => tx["currency"] || "EUR",
-            "description"  => build_description(tx),
-            "raw_payload"  => { "revolut_transaction" => tx }
-          }
+          raw_description = tx["description"].to_s
+          cleaned = build_description(tx)
+
+          Builder.build_transaction(
+            account_id:      account.id,
+            source_id:       tx_id.to_s,
+            amount:          Builder.cents_to_amount(amount_cents),
+            currency:        tx["currency"] || pocket["currency"] || "EUR",
+            date:            date,
+            description:     cleaned,
+            raw_description: raw_description,
+            merchant:        build_merchant(tx),
+            metadata:        { "revolut" => tx },
+            legacy_dedup_key: "revolut_live:#{pocket["id"]}:#{tx_id}"
+          )
         end
 
-        # --- Helpers ---
+        def build_merchant(tx)
+          m = tx["merchant"]
+          return nil unless m.is_a?(Hash)
+          name = m["name"]
+          return nil if name.nil? || name.to_s.strip.empty?
+          { name: name.to_s, normalized: true }
+        end
+
+        # --- Helpers --------------------------------------------------------
 
         def build_description(tx)
           desc = tx["description"] || tx.dig("merchant", "name") || tx["type"]
@@ -132,12 +163,11 @@ module Freentonic
         end
 
         def find_iban(pocket, bank_details)
-          return nil if bank_details.nil? || !bank_details.is_a?(Array)
+          return nil unless bank_details.is_a?(Array)
 
           entry = bank_details.find { |d| d["currency"] == pocket["currency"] }
           return nil unless entry
 
-          # Structure: { "details" => { "accounts" => [{ "iban" => "..." }] } }
           accounts = entry.dig("details", "accounts")
           return nil unless accounts.is_a?(Array)
 
@@ -150,7 +180,6 @@ module Freentonic
 
           case value
           when Numeric
-            # Unix timestamp in milliseconds
             Time.at(value / 1000.0).to_date
           when String
             if value =~ /\A\d+\z/
