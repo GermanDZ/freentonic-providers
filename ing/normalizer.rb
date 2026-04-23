@@ -4,13 +4,19 @@ require "date"
 require "bigdecimal"
 require "freentonic"
 require_relative "extractor"
-require_relative "../lib/freentonic/providers/canonical_builder"
+Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Ing
       class Normalizer < Freentonic::Normalizers::Base
+        include Freentonic::Providers::Helpers
         Builder = Freentonic::Providers::CanonicalBuilder
+        LegacyKeys = Freentonic::Providers::LegacyKeys
+
+        # Spanish-format dates dominate ING's feed; hint the helper so
+        # Date.parse doesn't flip DD/MM for months ≤ 12.
+        ING_DATE_FORMATS = ["%d/%m/%Y"].freeze
 
         KIND_BY_PRODUCT_TYPE = Extractor::KIND_BY_PRODUCT_TYPE
         ING_PENDING_STATUS = "Pendiente de liquidar"
@@ -68,9 +74,7 @@ module Freentonic
               "ing_product_number" => product["productNumber"],
               "balance_source"     => balance_cents ? "ing_live:product_balance" : nil
             },
-            legacy_external_id: "ing_live:#{uuid}",
-            legacy_uids:        legacy_account_uids(kind, uuid),
-            legacy_bank_key:    kind == "liability" ? "ing_cc" : "ing"
+            **LegacyKeys.account(institution: INSTITUTION, source_id: uuid, kind: kind)
           )
         end
 
@@ -94,7 +98,8 @@ module Freentonic
           amount = mv["amount"]
           return nil unless amount.is_a?(Numeric) && amount != 0
 
-          date = parse_ing_date(mv["effectiveDate"] || mv["chargeDate"])
+          date = parse_date(mv["effectiveDate"] || mv["chargeDate"],
+                             preferred_formats: ING_DATE_FORMATS)
           return nil unless date
 
           raw_description = mv["description"].to_s
@@ -106,23 +111,20 @@ module Freentonic
             amount:     amount,
             currency:   mv["currency"] || "EUR",
             date:       date,
-            value_date: parse_ing_date(mv["clearingDate"]),
+            value_date: parse_date(mv["clearingDate"], preferred_formats: ING_DATE_FORMATS),
             description:     cleaned,
             raw_description: raw_description,
             status:     Builder.map_status(ing_pending_status(mv)),
             metadata:   { "ing" => build_raw_fields(mv) },
-            legacy_dedup_key: "ing_live:#{product["uuid"]}:#{mv_uuid}"
+            **LegacyKeys.transaction(institution: INSTITUTION,
+                                     account_source_id: product["uuid"],
+                                     tx_source_id: mv_uuid)
           )
         end
 
         def pick_name(product)
           alias_name = product["alias"].to_s.strip
           alias_name.empty? ? (product["name"] || "ING") : alias_name
-        end
-
-        def legacy_account_uids(kind, uuid)
-          base = ["ing_live:#{uuid}"]
-          kind == "liability" ? ["ing-cc-#{uuid}"] + base : base
         end
 
         def ing_pending_status(mv)
@@ -153,16 +155,6 @@ module Freentonic
           }
         end
 
-        def parse_ing_date(str)
-          return nil if str.to_s.empty?
-          Date.strptime(str, "%d/%m/%Y")
-        rescue Date::Error
-          begin
-            Date.parse(str)
-          rescue
-            nil
-          end
-        end
       end
     end
   end

@@ -3,8 +3,7 @@
 require "date"
 require "bigdecimal"
 require "freentonic"
-require_relative "../lib/freentonic/providers/helpers"
-require_relative "../lib/freentonic/providers/canonical_builder"
+Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
@@ -12,6 +11,7 @@ module Freentonic
       class Normalizer < Freentonic::Normalizers::Base
         include Freentonic::Providers::Helpers
         Builder = Freentonic::Providers::CanonicalBuilder
+        LegacyKeys = Freentonic::Providers::LegacyKeys
 
         KIND_BY_TYPE = {
           "ACCOUNT"     => "asset",
@@ -77,9 +77,9 @@ module Freentonic
               "fintonic_product_id" => product_id,
               "fintonic_type"       => product_type
             },
-            legacy_external_id: "fintonic:#{bank_id}:#{product_id}",
-            legacy_uids:        ["fintonic-#{bank_id}-#{product_id}-#{product_type}"],
-            legacy_bank_key:    "fintonic_#{bank_id}"
+            **LegacyKeys.account(institution: INSTITUTION,
+                                 bank_id: bank_id, product_id: product_id,
+                                 product_type: product_type)
           )
         end
 
@@ -139,7 +139,7 @@ module Freentonic
                 "primaryDisplay"  => tx["primaryDisplay"]
               }
             },
-            legacy_dedup_key: "fintonic:#{tx_id}"
+            **LegacyKeys.transaction(institution: INSTITUTION, tx_id: tx_id)
           )
         end
 

@@ -1,0 +1,18 @@
+# Legacy-compatibility metadata for Revolut.
+#
+# Loaded by lib/freentonic/providers/legacy_keys_loader.rb. See ing/legacy.yml
+# for the full comment on the security posture.
+#
+# Placeholders populated by the normalizer call site:
+#   LegacyKeys.account(institution: :revolut, kind: "pocket"|"vault", source_ref:)
+#   LegacyKeys.transaction(institution: :revolut, pocket_id:, tx_id:)
+
+account:
+  external_id: "revolut_live:%{kind}:%{source_ref}"
+  uids:        ["revolut_live:%{kind}:%{source_ref}"]
+  bank_key:
+    default:  "revolut"
+    if_vault: "revolut_vault"
+
+transaction:
+  dedup_key: "revolut_live:%{pocket_id}:%{tx_id}"

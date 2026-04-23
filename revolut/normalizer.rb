@@ -3,13 +3,15 @@
 require "date"
 require "bigdecimal"
 require "freentonic"
-require_relative "../lib/freentonic/providers/canonical_builder"
+Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Revolut
       class Normalizer < Freentonic::Normalizers::Base
+        include Freentonic::Providers::Helpers
         Builder = Freentonic::Providers::CanonicalBuilder
+        LegacyKeys = Freentonic::Providers::LegacyKeys
 
         INSTITUTION = "revolut"
         SCRAPER_VERSION = "revolut/0.2"
@@ -56,15 +58,13 @@ module Freentonic
             name:        pocket["name"] || "Revolut #{currency}",
             type:        "checking",
             iban:        find_iban(pocket, bank_details),
-            balance:     { current: Builder.cents_to_amount(cents(pocket["balance"])), timestamp: nil },
+            balance:     { current: Builder.cents_to_amount(cents(pocket["balance"], already_minor: true)), timestamp: nil },
             metadata: {
               "revolut_pocket_id" => pocket_id,
               "revolut_type"      => pocket["type"],
               "balance_source"    => "revolut_live:wallet"
             },
-            legacy_external_id: "revolut_live:pocket:#{pocket_id}",
-            legacy_uids:        ["revolut_live:pocket:#{pocket_id}"],
-            legacy_bank_key:    "revolut"
+            **LegacyKeys.account(institution: INSTITUTION, kind: "pocket", source_ref: pocket_id)
           )
         end
 
@@ -75,7 +75,7 @@ module Freentonic
           return nil unless vault_id
 
           currency = vault["currency"] || "EUR"
-          balance_cents = cents(vault["balance"] || vault["currentAmount"])
+          balance_cents = cents(vault["balance"] || vault["currentAmount"], already_minor: true)
 
           Builder.build_account(
             institution: INSTITUTION,
@@ -90,9 +90,7 @@ module Freentonic
               "revolut_goal"     => vault["goal"],
               "balance_source"   => "revolut_live:vault"
             },
-            legacy_external_id: "revolut_live:vault:#{vault_id}",
-            legacy_uids:        ["revolut_live:vault:#{vault_id}"],
-            legacy_bank_key:    "revolut_vault"
+            **LegacyKeys.account(institution: INSTITUTION, kind: "vault", source_ref: vault_id)
           )
         end
 
@@ -105,7 +103,7 @@ module Freentonic
           amount_cents = extract_amount_cents(tx)
           return nil unless amount_cents && amount_cents != 0
 
-          date = parse_revolut_date(tx["startedDate"] || tx["completedDate"] || tx["createdDate"])
+          date = parse_date(tx["startedDate"] || tx["completedDate"] || tx["createdDate"])
           return nil unless date
 
           raw_description = tx["description"].to_s
@@ -121,7 +119,8 @@ module Freentonic
             raw_description: raw_description,
             merchant:        build_merchant(tx),
             metadata:        { "revolut" => tx },
-            legacy_dedup_key: "revolut_live:#{pocket["id"]}:#{tx_id}"
+            **LegacyKeys.transaction(institution: INSTITUTION,
+                                     pocket_id: pocket["id"], tx_id: tx_id)
           )
         end
 
@@ -142,24 +141,7 @@ module Freentonic
 
         def extract_amount_cents(tx)
           amount = tx["amount"] || tx["legs"]&.first&.dig("amount")
-          cents(amount)
-        end
-
-        # Revolut pocket balances and transaction amounts are already in
-        # minor units (cents). Vault balances are in major units inside
-        # a Hash like {"amount" => 12.34, "currency" => "EUR"}.
-        def cents(amount)
-          return nil if amount.nil?
-
-          case amount
-          when Hash
-            value = (amount["amount"] || amount["value"])&.to_f
-            value ? (value * 100).round : nil
-          when Numeric
-            amount.to_i
-          when String
-            (amount.tr(",", ".").to_f * 100).round
-          end
+          cents(amount, already_minor: true)
         end
 
         def find_iban(pocket, bank_details)
@@ -175,22 +157,6 @@ module Freentonic
           account&.dig("iban")
         end
 
-        def parse_revolut_date(value)
-          return nil if value.nil?
-
-          case value
-          when Numeric
-            Time.at(value / 1000.0).to_date
-          when String
-            if value =~ /\A\d+\z/
-              Time.at(value.to_i / 1000.0).to_date
-            else
-              Date.parse(value)
-            end
-          end
-        rescue ArgumentError, TypeError
-          nil
-        end
       end
     end
   end
