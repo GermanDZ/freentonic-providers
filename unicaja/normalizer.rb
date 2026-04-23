@@ -5,22 +5,8 @@ require "digest"
 require "bigdecimal"
 require "freentonic"
 require_relative "../lib/freentonic/providers/canonical_builder"
-require_relative "../lib/freentonic/providers/legacy_keys"
-
-Freentonic::Providers::LegacyKeys.register(:unicaja,
-  account: {
-    external_id: "unicaja_live:%{kind}:%{ppp}",
-    uids:        ["unicaja_live:%{kind}:%{ppp}"],
-    bank_key: {
-      default:     "unicaja",
-      if_tarjeta:  "unicaja_cc",
-      if_prestamo: "unicaja_loan"
-    }
-  },
-  transaction: {
-    dedup_key: "unicaja_live:%{ppp}:%{mv_id}"
-  }
-)
+require_relative "../lib/freentonic/providers/legacy_keys_loader"
+Freentonic::Providers::LegacyKeysLoader.load_all!
 
 module Freentonic
   module Providers

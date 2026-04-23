@@ -5,24 +5,8 @@ require "bigdecimal"
 require "freentonic"
 require_relative "extractor"
 require_relative "../lib/freentonic/providers/canonical_builder"
-require_relative "../lib/freentonic/providers/legacy_keys"
-
-Freentonic::Providers::LegacyKeys.register(:ing,
-  account: {
-    external_id: "ing_live:%{source_id}",
-    uids: {
-      default:      ["ing_live:%{source_id}"],
-      if_liability: ["ing-cc-%{source_id}", "ing_live:%{source_id}"]
-    },
-    bank_key: {
-      default:      "ing",
-      if_liability: "ing_cc"
-    }
-  },
-  transaction: {
-    dedup_key: "ing_live:%{account_source_id}:%{tx_source_id}"
-  }
-)
+require_relative "../lib/freentonic/providers/legacy_keys_loader"
+Freentonic::Providers::LegacyKeysLoader.load_all!
 
 module Freentonic
   module Providers

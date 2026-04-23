@@ -4,21 +4,8 @@ require "date"
 require "bigdecimal"
 require "freentonic"
 require_relative "../lib/freentonic/providers/canonical_builder"
-require_relative "../lib/freentonic/providers/legacy_keys"
-
-Freentonic::Providers::LegacyKeys.register(:revolut,
-  account: {
-    external_id: "revolut_live:%{kind}:%{source_ref}",
-    uids:        ["revolut_live:%{kind}:%{source_ref}"],
-    bank_key: {
-      default:  "revolut",
-      if_vault: "revolut_vault"
-    }
-  },
-  transaction: {
-    dedup_key: "revolut_live:%{pocket_id}:%{tx_id}"
-  }
-)
+require_relative "../lib/freentonic/providers/legacy_keys_loader"
+Freentonic::Providers::LegacyKeysLoader.load_all!
 
 module Freentonic
   module Providers
