@@ -10,11 +10,16 @@ module Freentonic
   module Providers
     module Unicaja
       class Normalizer < Freentonic::Normalizers::Base
+        include Freentonic::Providers::Helpers
         Builder = Freentonic::Providers::CanonicalBuilder
         LegacyKeys = Freentonic::Providers::LegacyKeys
 
         INSTITUTION = "unicaja"
         SCRAPER_VERSION = "unicaja/0.2"
+
+        # Spanish-format dates dominate Unicaja's feed; hint the helper
+        # so ambiguous DD/MM/YYYY strings aren't flipped.
+        UNICAJA_DATE_FORMATS = ["%d/%m/%Y"].freeze
 
         def call(raw, context: {})
           @cuenta_movements  = raw["cuenta_movements"] || {}
@@ -111,7 +116,7 @@ module Freentonic
         end
 
         def build_card_liability(t, account)
-          limit_cents   = to_cents(t.dig("limite", "cantidad"))
+          limit_cents   = cents(t.dig("limite", "cantidad"))
           balance_cents = extract_card_balance_cents(t)
           Builder.build_liability(
             account_id: account.id,
@@ -180,7 +185,8 @@ module Freentonic
 
           date = parse_date(
             mv["fechaOperacion"] || mv["fechaoper"] || mv["fechaValor"] ||
-            mv["fechavalor"] || mv["fecha"]
+              mv["fechavalor"] || mv["fecha"],
+            preferred_formats: UNICAJA_DATE_FORMATS
           )
           return nil unless date
 
@@ -228,7 +234,7 @@ module Freentonic
         end
 
         def extract_amount_cents(mv)
-          to_cents(mv["importe"] || mv["importeMovimiento"] || mv["cantidad"] || mv["amount"])
+          cents(mv["importe"] || mv["importeMovimiento"] || mv["cantidad"] || mv["amount"])
         end
 
         def extract_currency(mv)
@@ -238,7 +244,7 @@ module Freentonic
         end
 
         def extract_balance_cents(p)
-          to_cents(p["saldo"] || p["saldoActual"] || p["saldoDisponible"] || p["balance"])
+          cents(p["saldo"] || p["saldoActual"] || p["saldoDisponible"] || p["balance"])
         end
 
         # Card outstanding = limite - disponible (in cents).
@@ -255,16 +261,6 @@ module Freentonic
           (raw.to_f * 100).round
         end
 
-        def to_cents(value)
-          return nil if value.nil?
-          float = case value
-                  when Hash    then (value["cantidad"] || value["importe"] || value["value"])&.to_f
-                  when Numeric then value.to_f
-                  when String  then value.tr(",", ".").to_f
-                  end
-          float ? (float * 100).round : nil
-        end
-
         def credit_card?(t)
           return true if t["codtipotarjeta"].to_s == "2"
           tipo = "#{t["tipotarjeta"]} #{t["descripcion"]}".downcase
@@ -278,16 +274,6 @@ module Freentonic
           "loan"
         end
 
-        def parse_date(str)
-          return nil if str.to_s.empty?
-          Date.parse(str)
-        rescue Date::Error
-          begin
-            Date.strptime(str, "%d/%m/%Y")
-          rescue Date::Error
-            nil
-          end
-        end
       end
     end
   end

@@ -10,8 +10,13 @@ module Freentonic
   module Providers
     module Ing
       class Normalizer < Freentonic::Normalizers::Base
+        include Freentonic::Providers::Helpers
         Builder = Freentonic::Providers::CanonicalBuilder
         LegacyKeys = Freentonic::Providers::LegacyKeys
+
+        # Spanish-format dates dominate ING's feed; hint the helper so
+        # Date.parse doesn't flip DD/MM for months ≤ 12.
+        ING_DATE_FORMATS = ["%d/%m/%Y"].freeze
 
         KIND_BY_PRODUCT_TYPE = Extractor::KIND_BY_PRODUCT_TYPE
         ING_PENDING_STATUS = "Pendiente de liquidar"
@@ -93,7 +98,8 @@ module Freentonic
           amount = mv["amount"]
           return nil unless amount.is_a?(Numeric) && amount != 0
 
-          date = parse_ing_date(mv["effectiveDate"] || mv["chargeDate"])
+          date = parse_date(mv["effectiveDate"] || mv["chargeDate"],
+                             preferred_formats: ING_DATE_FORMATS)
           return nil unless date
 
           raw_description = mv["description"].to_s
@@ -105,7 +111,7 @@ module Freentonic
             amount:     amount,
             currency:   mv["currency"] || "EUR",
             date:       date,
-            value_date: parse_ing_date(mv["clearingDate"]),
+            value_date: parse_date(mv["clearingDate"], preferred_formats: ING_DATE_FORMATS),
             description:     cleaned,
             raw_description: raw_description,
             status:     Builder.map_status(ing_pending_status(mv)),
@@ -149,16 +155,6 @@ module Freentonic
           }
         end
 
-        def parse_ing_date(str)
-          return nil if str.to_s.empty?
-          Date.strptime(str, "%d/%m/%Y")
-        rescue Date::Error
-          begin
-            Date.parse(str)
-          rescue
-            nil
-          end
-        end
       end
     end
   end
