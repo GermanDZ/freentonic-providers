@@ -1,88 +1,132 @@
 # frozen_string_literal: true
 
-# ING normalizer: converts the Extractor's raw product/movement payload
-# into the universal account/movement shape that freentonic HTTP receivers
-# are expected to accept (source_tag, accounts[].movements[]). The exact
-# receiver spec is defined by the ingest system you export to.
-
 require "date"
+require "bigdecimal"
+require "freentonic"
 require_relative "extractor"
+require_relative "../lib/freentonic/providers/canonical_builder"
 
 module Freentonic
   module Providers
     module Ing
       class Normalizer < Freentonic::Normalizers::Base
+        Builder = Freentonic::Providers::CanonicalBuilder
+
         KIND_BY_PRODUCT_TYPE = Extractor::KIND_BY_PRODUCT_TYPE
         ING_PENDING_STATUS = "Pendiente de liquidar"
+        INSTITUTION = "ing"
+        SCRAPER_VERSION = "ing/0.2"
 
         def call(raw, context: {})
-          {
-            "source_tag" => "ing_push",
-            "accounts"   => Array(raw).filter_map { |p| build_account(p) }
-          }
+          accounts, liabilities, transactions = [], [], []
+
+          Array(raw).each do |product|
+            kind = KIND_BY_PRODUCT_TYPE[product["type"].to_i]
+            next if kind.nil?
+
+            account = build_account(product, kind)
+            accounts << account
+
+            if kind == "liability"
+              liabilities << build_liability(product, account)
+            end
+
+            Array(product["movements"]).each do |mv|
+              txn = build_transaction(product, account, mv)
+              transactions << txn if txn
+            end
+          end
+
+          Builder.payload(
+            accounts:     accounts,
+            transactions: transactions,
+            liabilities:  liabilities,
+            scraper_version: SCRAPER_VERSION
+          )
         end
 
         private
 
-        def build_account(product)
-          type_id = product["type"].to_i
-          kind = KIND_BY_PRODUCT_TYPE[type_id]
-          return nil if kind.nil?
-
+        def build_account(product, kind)
           uuid = product["uuid"]
-          legacy_uids = ["ing_live:#{uuid}"]
-          legacy_uids.unshift("ing-cc-#{uuid}") if kind == "liability"
-
           iban = product["iban"].to_s.gsub(/\s/, "")
+          balance_cents =
+            if product["balance"].is_a?(Numeric)
+              (product["balance"].to_f * 100).round
+            end
 
-          balance_cents = if product["balance"].is_a?(Numeric)
-                            (product["balance"].to_f * 100).round
-                          end
-
-          movements = (product["movements"] || []).filter_map { |mv| build_movement(uuid, mv) }
-
-          {
-            "external_id"    => "ing_live:#{uuid}",
-            "legacy_uids"    => legacy_uids,
-            "iban"           => iban.empty? ? nil : iban,
-            "product_number" => product["productNumber"],
-            "kind"           => kind,
-            "bank_key"       => kind == "liability" ? "ing_cc" : "ing",
-            "name"           => product["alias"].to_s.strip.empty? ? (product["name"] || "ING") : product["alias"],
-            "currency"       => product["currency"] || "EUR",
-            "balance_cents"  => balance_cents,
-            "balance_source" => balance_cents ? "ing_live:product_balance" : nil,
-            "metadata"       => {
+          Builder.build_account(
+            institution: INSTITUTION,
+            source_id:   uuid,
+            currency:    product["currency"] || "EUR",
+            name:        pick_name(product),
+            type:        kind == "liability" ? "credit_card" : "checking",
+            iban:        iban.empty? ? nil : iban,
+            balance:     { current: Builder.cents_to_amount(balance_cents), timestamp: nil },
+            metadata: {
               "ing_product_type"   => product["type"],
-              "ing_product_number" => product["productNumber"]
+              "ing_product_number" => product["productNumber"],
+              "balance_source"     => balance_cents ? "ing_live:product_balance" : nil
             },
-            "movements"      => movements
-          }
+            legacy_external_id: "ing_live:#{uuid}",
+            legacy_uids:        legacy_account_uids(kind, uuid),
+            legacy_bank_key:    kind == "liability" ? "ing_cc" : "ing"
+          )
         end
 
-        def build_movement(product_uuid, mv)
+        def build_liability(product, account)
+          Builder.build_liability(
+            account_id: account.id,
+            type:       "credit_card",
+            currency:   account.currency,
+            source_id:  product["uuid"],
+            metadata:   {
+              "ing_product_type"   => product["type"],
+              "ing_product_number" => product["productNumber"]
+            }
+          )
+        end
+
+        def build_transaction(product, account, mv)
           mv_uuid = mv["uuid"]
           return nil unless mv_uuid
 
           amount = mv["amount"]
           return nil unless amount.is_a?(Numeric) && amount != 0
 
-          date_str = mv["effectiveDate"] || mv["chargeDate"]
-          date = parse_ing_date(date_str)
+          date = parse_ing_date(mv["effectiveDate"] || mv["chargeDate"])
           return nil unless date
 
-          status_desc = mv.dig("status", "description")
-          pending_status = (status_desc == ING_PENDING_STATUS) ? "pending" : "settled"
+          raw_description = mv["description"].to_s
+          cleaned = (mv["description"] || mv["store"]).to_s.strip
 
-          {
-            "dedup_key"      => "ing_live:#{product_uuid}:#{mv_uuid}",
-            "date"           => date.strftime("%Y-%m-%d"),
-            "amount_cents"   => (amount * 100).round,
-            "currency"       => mv["currency"] || "EUR",
-            "description"    => (mv["description"] || mv["store"]).to_s.strip,
-            "pending_status" => pending_status,
-            "raw_payload"    => { "ing" => build_raw_fields(mv) }
-          }
+          Builder.build_transaction(
+            account_id: account.id,
+            source_id:  mv_uuid,
+            amount:     amount,
+            currency:   mv["currency"] || "EUR",
+            date:       date,
+            value_date: parse_ing_date(mv["clearingDate"]),
+            description:     cleaned,
+            raw_description: raw_description,
+            status:     Builder.map_status(ing_pending_status(mv)),
+            metadata:   { "ing" => build_raw_fields(mv) },
+            legacy_dedup_key: "ing_live:#{product["uuid"]}:#{mv_uuid}"
+          )
+        end
+
+        def pick_name(product)
+          alias_name = product["alias"].to_s.strip
+          alias_name.empty? ? (product["name"] || "ING") : alias_name
+        end
+
+        def legacy_account_uids(kind, uuid)
+          base = ["ing_live:#{uuid}"]
+          kind == "liability" ? ["ing-cc-#{uuid}"] + base : base
+        end
+
+        def ing_pending_status(mv)
+          mv.dig("status", "description") == ING_PENDING_STATUS ? "pending" : "settled"
         end
 
         def build_raw_fields(mv)

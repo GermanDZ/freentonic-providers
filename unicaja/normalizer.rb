@@ -1,143 +1,239 @@
 # frozen_string_literal: true
 
-# Unicaja normalizer: converts the Extractor's raw product/movement hash
-# into the universal account/movement shape that freentonic HTTP receivers
-# are expected to accept. The exact receiver spec is defined by the ingest
-# system you export to.
-
 require "date"
 require "digest"
+require "bigdecimal"
+require "freentonic"
+require_relative "../lib/freentonic/providers/canonical_builder"
 
 module Freentonic
   module Providers
     module Unicaja
       class Normalizer < Freentonic::Normalizers::Base
+        Builder = Freentonic::Providers::CanonicalBuilder
+
+        INSTITUTION = "unicaja"
+        SCRAPER_VERSION = "unicaja/0.2"
+
         def call(raw, context: {})
-          @cuentas           = Array(raw["cuentas"])
-          @tarjetas          = Array(raw["tarjetas"])
-          @prestamos         = Array(raw["prestamos"])
           @cuenta_movements  = raw["cuenta_movements"] || {}
           @tarjeta_movements = raw["tarjeta_movements"] || {}
 
-          accounts = []
-          accounts.concat(@cuentas.filter_map  { |c| build_cuenta(c) })
-          accounts.concat(@tarjetas.filter_map { |t| build_tarjeta(t) })
-          accounts.concat(@prestamos.filter_map { |l| build_prestamo(l) })
+          accounts, liabilities, transactions = [], [], []
 
-          { "source_tag" => "unicaja_push", "accounts" => accounts }
+          Array(raw["cuentas"]).each do |c|
+            account = build_cuenta(c)
+            next unless account
+            accounts << account
+            transactions.concat(build_transactions(account, ppp_for(c), @cuenta_movements[ppp_for(c)]))
+          end
+
+          Array(raw["tarjetas"]).each do |t|
+            next unless credit_card?(t)
+            account = build_tarjeta(t)
+            next unless account
+            accounts << account
+            liabilities << build_card_liability(t, account)
+            transactions.concat(build_transactions(account, ppp_for(t), @tarjeta_movements[ppp_for(t)]))
+          end
+
+          Array(raw["prestamos"]).each do |l|
+            account = build_prestamo_account(l)
+            next unless account
+            accounts << account
+            liabilities << build_loan_liability(l, account)
+          end
+
+          Builder.payload(
+            accounts:     accounts,
+            transactions: transactions,
+            liabilities:  liabilities,
+            scraper_version: SCRAPER_VERSION
+          )
         end
 
         private
 
-        def presence(str)
-          s = str.to_s.strip
-          s.empty? ? nil : s
-        end
+        # --- Cuenta (checking) ------------------------------------------------
 
         def build_cuenta(c)
-          ppp = c["ppp"] || c["codigoProducto"] || c["id"]
+          ppp = ppp_for(c)
           return nil unless ppp
+          balance_cents = extract_balance_cents(c)
 
-          movements = (@cuenta_movements[ppp] || []).filter_map { |mv| build_movement(ppp, mv) }
-
-          {
-            "external_id"    => "unicaja_live:cuenta:#{ppp}",
-            "legacy_uids"    => ["unicaja_live:cuenta:#{ppp}"],
-            "iban"           => c["iban"] || c["IBAN"],
-            "kind"           => "asset",
-            "bank_key"       => "unicaja",
-            "name"           => c["alias"].to_s.strip.empty? ? (presence(c["descripcion"]) || "Unicaja #{ppp}") : c["alias"],
-            "currency"       => c["divisa"] || c["moneda"] || "EUR",
-            "balance_cents"  => extract_balance_cents(c),
-            "balance_source" => "unicaja_live:listacuentas",
-            "metadata"       => { "unicaja_ppp" => ppp, "unicaja_kind" => "cuenta" },
-            "movements"      => movements
-          }
+          Builder.build_account(
+            institution: INSTITUTION,
+            source_id:   "cuenta:#{ppp}",
+            currency:    c["divisa"] || c["moneda"] || "EUR",
+            name:        pick_name(c["alias"], c["descripcion"], "Unicaja #{ppp}"),
+            type:        "checking",
+            iban:        c["iban"] || c["IBAN"],
+            balance: {
+              current:   Builder.cents_to_amount(balance_cents),
+              timestamp: nil
+            },
+            metadata: {
+              "unicaja_ppp"    => ppp,
+              "unicaja_kind"   => "cuenta",
+              "balance_source" => "unicaja_live:listacuentas"
+            },
+            legacy_external_id: "unicaja_live:cuenta:#{ppp}",
+            legacy_uids:        ["unicaja_live:cuenta:#{ppp}"],
+            legacy_bank_key:    "unicaja"
+          )
         end
+
+        # --- Tarjeta (credit card) -------------------------------------------
 
         def build_tarjeta(t)
-          ppp = t["ppp"] || t["codigoProducto"] || t["id"]
+          ppp = ppp_for(t)
           return nil unless ppp
-          return nil unless credit_card?(t)
-
-          movements = (@tarjeta_movements[ppp] || []).filter_map { |mv| build_movement(ppp, mv) }
-
           balance_cents = extract_card_balance_cents(t)
 
-          {
-            "external_id"    => "unicaja_live:tarjeta:#{ppp}",
-            "legacy_uids"    => ["unicaja_live:tarjeta:#{ppp}"],
-            "kind"           => "liability",
-            "bank_key"       => "unicaja_cc",
-            "name"           => t["alias"].to_s.strip.empty? ? (presence(t["tipotarjeta"]) || presence(t["descripcion"]) || "Unicaja card #{ppp}") : t["alias"],
-            "currency"       => t["divisa"] || t["moneda"] || "EUR",
-            "balance_cents"  => balance_cents,
-            "balance_source" => balance_cents ? "unicaja_live:listatarjetas" : nil,
-            "metadata"       => { "unicaja_ppp" => ppp, "unicaja_kind" => "tarjeta", "unicaja_codtipotarjeta" => t["codtipotarjeta"] },
-            "movements"      => movements
-          }
+          Builder.build_account(
+            institution: INSTITUTION,
+            source_id:   "tarjeta:#{ppp}",
+            currency:    t["divisa"] || t["moneda"] || "EUR",
+            name:        pick_name(t["alias"], t["tipotarjeta"], "Unicaja card #{ppp}", t["descripcion"]),
+            type:        "credit_card",
+            iban:        nil,
+            balance: {
+              current:   Builder.cents_to_amount(balance_cents),
+              timestamp: nil
+            },
+            metadata: {
+              "unicaja_ppp"            => ppp,
+              "unicaja_kind"           => "tarjeta",
+              "unicaja_codtipotarjeta" => t["codtipotarjeta"],
+              "balance_source"         => balance_cents ? "unicaja_live:listatarjetas" : nil
+            },
+            legacy_external_id: "unicaja_live:tarjeta:#{ppp}",
+            legacy_uids:        ["unicaja_live:tarjeta:#{ppp}"],
+            legacy_bank_key:    "unicaja_cc"
+          )
         end
 
-        def build_prestamo(l)
+        def build_card_liability(t, account)
+          limit_cents   = to_cents(t.dig("limite", "cantidad"))
+          balance_cents = extract_card_balance_cents(t)
+          Builder.build_liability(
+            account_id: account.id,
+            type:       "credit_card",
+            currency:   account.currency,
+            source_id:  "tarjeta:#{ppp_for(t)}",
+            balance:    Builder.cents_to_amount(balance_cents),
+            limit:      Builder.cents_to_amount(limit_cents),
+            metadata:   { "unicaja_codtipotarjeta" => t["codtipotarjeta"] }
+          )
+        end
+
+        # --- Prestamo (loan / mortgage) --------------------------------------
+
+        def build_prestamo_account(l)
           ppp = l["ppp"]
           return nil unless ppp
+          balance_cents = prestamo_balance_cents(l)
 
-          balance_cents = if l.dig("saldo", "cantidad").is_a?(Numeric)
-                            (l.dig("saldo", "cantidad").to_f * 100).round
-                          end
-
-          {
-            "external_id"    => "unicaja_live:prestamo:#{ppp}",
-            "legacy_uids"    => ["unicaja_live:prestamo:#{ppp}"],
-            "kind"           => "liability",
-            "bank_key"       => "unicaja_loan",
-            "name"           => l["alias"].to_s.strip.empty? ? (presence(l["descripcion"]) || "Unicaja loan #{ppp}") : l["alias"],
-            "currency"       => l.dig("saldo", "moneda") || "EUR",
-            "balance_cents"  => balance_cents,
-            "balance_source" => balance_cents ? "unicaja_live:listaprestamos" : nil,
-            "metadata"       => { "unicaja_ppp" => ppp, "unicaja_kind" => "prestamo", "unicaja_loan_type" => detect_loan_type(l) },
-            "movements"      => []
-          }
+          Builder.build_account(
+            institution: INSTITUTION,
+            source_id:   "prestamo:#{ppp}",
+            currency:    l.dig("saldo", "moneda") || "EUR",
+            name:        pick_name(l["alias"], l["descripcion"], "Unicaja loan #{ppp}"),
+            type:        "loan",
+            iban:        nil,
+            balance: {
+              current:   Builder.cents_to_amount(balance_cents),
+              timestamp: nil
+            },
+            metadata: {
+              "unicaja_ppp"       => ppp,
+              "unicaja_kind"      => "prestamo",
+              "unicaja_loan_type" => detect_loan_type(l),
+              "balance_source"    => balance_cents ? "unicaja_live:listaprestamos" : nil
+            },
+            legacy_external_id: "unicaja_live:prestamo:#{ppp}",
+            legacy_uids:        ["unicaja_live:prestamo:#{ppp}"],
+            legacy_bank_key:    "unicaja_loan"
+          )
         end
 
-        def build_movement(ppp, mv)
+        def build_loan_liability(l, account)
+          balance_cents = prestamo_balance_cents(l)
+          Builder.build_liability(
+            account_id: account.id,
+            type:       detect_loan_type(l),
+            currency:   account.currency,
+            source_id:  "prestamo:#{l["ppp"]}",
+            balance:    Builder.cents_to_amount(balance_cents),
+            metadata:   { "unicaja_loan_type" => detect_loan_type(l) }
+          )
+        end
+
+        # --- Movements -------------------------------------------------------
+
+        def build_transactions(account, ppp, movements)
+          return [] unless movements.is_a?(Array)
+          movements.filter_map { |mv| build_transaction(account, ppp, mv) }
+        end
+
+        def build_transaction(account, ppp, mv)
           mv_id = movement_id(mv)
           return nil unless mv_id
 
           amount_cents = extract_amount_cents(mv)
           return nil unless amount_cents && amount_cents != 0
 
-          date = parse_date(mv["fechaOperacion"] || mv["fechaoper"] || mv["fechaValor"] || mv["fechavalor"] || mv["fecha"])
+          date = parse_date(
+            mv["fechaOperacion"] || mv["fechaoper"] || mv["fechaValor"] ||
+            mv["fechavalor"] || mv["fecha"]
+          )
           return nil unless date
 
-          description = mv["concepto"] || mv["nombreComercio"] || mv["descripcionOper"] || mv["descripcion"]
+          raw_description = (mv["concepto"] || mv["descripcionOper"] || mv["descripcion"]).to_s
+          cleaned_desc = (mv["concepto"] || mv["nombreComercio"] || mv["descripcionOper"] ||
+                          mv["descripcion"]).to_s.strip
 
-          {
-            "dedup_key"    => "unicaja_live:#{ppp}:#{mv_id}",
-            "date"         => date.strftime("%Y-%m-%d"),
-            "amount_cents" => amount_cents,
-            "currency"     => extract_currency(mv) || "EUR",
-            "description"  => description.to_s.strip,
-            "raw_payload"  => { "unicaja_movement" => mv, "ppp" => ppp }
-          }
+          Builder.build_transaction(
+            account_id:      account.id,
+            source_id:       mv_id,
+            amount:          Builder.cents_to_amount(amount_cents),
+            currency:        extract_currency(mv) || account.currency,
+            date:            date,
+            description:     cleaned_desc,
+            raw_description: raw_description,
+            metadata:        { "unicaja_movement" => mv, "ppp" => ppp },
+            legacy_dedup_key: "unicaja_live:#{ppp}:#{mv_id}"
+          )
+        end
+
+        # --- Helpers ---------------------------------------------------------
+
+        def ppp_for(product)
+          product["ppp"] || product["codigoProducto"] || product["id"]
+        end
+
+        def pick_name(*candidates)
+          candidates.each do |c|
+            s = c.to_s.strip
+            return s unless s.empty?
+          end
+          candidates.last.to_s
         end
 
         def movement_id(mv)
-          mv["numMovimiento"] || mv["nummov"] || mv["idMovimiento"] || mv["referenciaUnica"] || mv["id"] || begin
-            parts = [mv["fechaOperacion"] || mv["fechaoper"], mv["importe"], mv["concepto"] || mv["nombreComercio"]].map(&:to_s).join("|")
-            "h:#{Digest::SHA1.hexdigest(parts)[0, 16]}"
-          end
+          mv["numMovimiento"] || mv["nummov"] || mv["idMovimiento"] ||
+            mv["referenciaUnica"] || mv["id"] || begin
+              parts = [
+                mv["fechaOperacion"] || mv["fechaoper"],
+                mv["importe"],
+                mv["concepto"] || mv["nombreComercio"]
+              ].map(&:to_s).join("|")
+              "h:#{Digest::SHA1.hexdigest(parts)[0, 16]}"
+            end
         end
 
         def extract_amount_cents(mv)
-          raw = mv["importe"] || mv["importeMovimiento"] || mv["cantidad"] || mv["amount"]
-          return nil if raw.nil?
-          float = case raw
-                  when Hash    then (raw["cantidad"] || raw["importe"] || raw["value"])&.to_f
-                  when Numeric then raw.to_f
-                  when String  then raw.tr(",", ".").to_f
-                  end
-          float ? (float * 100).round : nil
+          to_cents(mv["importe"] || mv["importeMovimiento"] || mv["cantidad"] || mv["amount"])
         end
 
         def extract_currency(mv)
@@ -147,21 +243,31 @@ module Freentonic
         end
 
         def extract_balance_cents(p)
-          raw = p["saldo"] || p["saldoActual"] || p["saldoDisponible"] || p["balance"]
-          return nil if raw.nil?
-          float = case raw
-                  when Hash    then (raw["cantidad"] || raw["importe"] || raw["value"])&.to_f
-                  when Numeric then raw.to_f
-                  when String  then raw.tr(",", ".").to_f
-                  end
-          float ? (float * 100).round : nil
+          to_cents(p["saldo"] || p["saldoActual"] || p["saldoDisponible"] || p["balance"])
         end
 
+        # Card outstanding = limite - disponible (in cents).
         def extract_card_balance_cents(t)
           limite     = t.dig("limite", "cantidad")
           disponible = t.dig("disponible", "cantidad")
           return nil unless limite.is_a?(Numeric) && disponible.is_a?(Numeric)
           ((limite - disponible) * 100).round
+        end
+
+        def prestamo_balance_cents(l)
+          raw = l.dig("saldo", "cantidad")
+          return nil unless raw.is_a?(Numeric)
+          (raw.to_f * 100).round
+        end
+
+        def to_cents(value)
+          return nil if value.nil?
+          float = case value
+                  when Hash    then (value["cantidad"] || value["importe"] || value["value"])&.to_f
+                  when Numeric then value.to_f
+                  when String  then value.tr(",", ".").to_f
+                  end
+          float ? (float * 100).round : nil
         end
 
         def credit_card?(t)
