@@ -62,15 +62,22 @@ module Freentonic
       # Build a Canonical::Account. Computes id via Canonical.account_id,
       # merges legacy-compat metadata on top of the caller's metadata
       # (legacy keys win, so providers can't accidentally blank them out).
+      #
+      # stable_ref: forces the id to hash (institution + stable_ref) only,
+      # bypassing the iban/source_id/name fallback chain. Needed for
+      # multi-account-per-IBAN banks (e.g. Revolut, whose per-currency
+      # pockets share the user's IBAN — without an override, they would
+      # all collapse to the same acc_ id).
       def build_account(institution:, source_id:, currency:,
                         name: nil, type: nil, iban: nil, balance: nil,
-                        metadata: {},
+                        metadata: {}, stable_ref: nil,
                         legacy_external_id:, legacy_uids:, legacy_bank_key:)
         id = Freentonic::Canonical.account_id(
           institution: institution,
           iban: iban,
           source_id: source_id,
-          name: name
+          name: name,
+          stable_ref: stable_ref
         )
         merged_metadata = (metadata || {}).merge(
           account_legacy_metadata(

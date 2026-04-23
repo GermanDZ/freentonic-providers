@@ -113,6 +113,21 @@ class CanonicalBuilderTest < Minitest::Test
     assert_equal ["ing_live:p"], acct.metadata["legacy_uids"]
   end
 
+  def test_build_account_stable_ref_overrides_iban_for_id
+    # Two accounts with same iban but distinct stable_ref must get
+    # different ids (multi-account-per-IBAN case, e.g. Revolut pockets).
+    shared = {
+      institution: "revolut", currency: "EUR",
+      iban: "LT00 1234 5678 9012 3456",
+      legacy_external_id: "x", legacy_uids: ["x"], legacy_bank_key: "revolut"
+    }
+    a = Builder.build_account(**shared, source_id: "pocket:a", stable_ref: "pocket:a")
+    b = Builder.build_account(**shared, source_id: "pocket:b", stable_ref: "pocket:b")
+
+    refute_equal a.id, b.id
+    assert_equal a.iban, b.iban   # iban still stored for downstream matching
+  end
+
   def test_build_account_id_is_deterministic
     args = {
       institution: "ing", source_id: "p", currency: "EUR",

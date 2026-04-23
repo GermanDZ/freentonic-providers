@@ -196,4 +196,31 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal "-12.34", wire["transactions"].first["amount"]
     refute_includes wire.to_s, "_cents"
   end
+
+  # Regression: Revolut pockets share a single IBAN per currency. Without
+  # stable_ref, Canonical.account_id picks iban first and collapses every
+  # same-currency pocket to the same acc_ id.
+  def test_multiple_pockets_share_iban_but_get_distinct_ids
+    raw = {
+      "wallet"  => {},
+      "pockets" => [
+        { "id" => "pocket-a", "name" => "A", "currency" => "EUR", "balance" => 100 },
+        { "id" => "pocket-b", "name" => "B", "currency" => "EUR", "balance" => 200 },
+        { "id" => "pocket-c", "name" => "C", "currency" => "EUR", "balance" => 300 }
+      ],
+      "bank_details" => [
+        { "currency" => "EUR", "details" => { "accounts" => [{ "iban" => "LT00 1234 5678 9012 3456" }] } }
+      ],
+      "cards" => [], "vaults" => [], "pocket_transactions" => {}
+    }
+
+    payload = normalizer.call(raw)
+    ids = payload.accounts.map(&:id)
+
+    assert_equal 3, ids.size
+    assert_equal 3, ids.uniq.size, "same-IBAN pockets must hash to distinct ids"
+    # All three still carry the shared IBAN for downstream matching.
+    ibans = payload.accounts.map(&:iban).uniq
+    assert_equal ["LT00 1234 5678 9012 3456"], ibans
+  end
 end

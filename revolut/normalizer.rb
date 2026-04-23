@@ -48,10 +48,16 @@ module Freentonic
           pocket_id = pocket["id"]
           return nil unless pocket_id
 
-          currency = pocket["currency"] || "EUR"
+          currency  = pocket["currency"] || "EUR"
+          source_id = "pocket:#{pocket_id}"
           Builder.build_account(
             institution: INSTITUTION,
-            source_id:   "pocket:#{pocket_id}",
+            source_id:   source_id,
+            # Revolut pockets share a single user IBAN per currency, so
+            # iban alone would collapse every EUR pocket to the same id.
+            # Force the id to hash on source_id (unique per pocket) via
+            # stable_ref. iban stays on the Account entity for matching.
+            stable_ref:  source_id,
             currency:    currency,
             name:        pocket["name"] || "Revolut #{currency}",
             type:        "checking",
