@@ -1,0 +1,14 @@
+# Per-provider declarative config for Fintonic.
+#
+# Loaded by Freentonic::Providers::Config.load_provider!(__dir__) at the
+# top of normalizer.rb. Parsed via YAML.safe_load with permitted_classes=[]
+# and aliases=false — pure data only.
+
+institution: fintonic
+scraper_version: fintonic/0.2
+
+# Fintonic product type string → canonical kind.
+kind_by_type:
+  ACCOUNT:     asset
+  CREDIT_CARD: liability
+  CREDITCARD:  liability

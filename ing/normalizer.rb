@@ -18,10 +18,14 @@ module Freentonic
         # Date.parse doesn't flip DD/MM for months ≤ 12.
         ING_DATE_FORMATS = ["%d/%m/%Y"].freeze
 
-        KIND_BY_PRODUCT_TYPE = Extractor::KIND_BY_PRODUCT_TYPE
+        # Provider knobs from ing/config.yml; the Extractor's load_provider!
+        # call has already populated the cache by the time this file loads.
+        CONFIG               = Freentonic::Providers::Config.for(:ing)
+        INSTITUTION          = CONFIG.fetch(:institution)
+        SCRAPER_VERSION      = CONFIG.fetch(:scraper_version)
+        KIND_BY_PRODUCT_TYPE = CONFIG.fetch(:kind_by_product_type)
+
         ING_PENDING_STATUS = "Pendiente de liquidar"
-        INSTITUTION = "ing"
-        SCRAPER_VERSION = "ing/0.2"
 
         def call(raw, context: {})
           accounts, liabilities, transactions = [], [], []

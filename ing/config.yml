@@ -1,0 +1,19 @@
+# Per-provider declarative config for ING.
+#
+# Loaded by Freentonic::Providers::Config.load_provider!(__dir__) at the
+# top of normalizer.rb / extractor.rb. Parsed via YAML.safe_load with
+# permitted_classes=[] and aliases=false — pure data only; a PR that
+# adds Ruby here cannot execute.
+
+institution: ing
+scraper_version: ing/0.2
+
+# Numeric ING product type → canonical kind. nil means "not balance-bearing"
+# and the product is dropped before reaching the canonical pipeline.
+kind_by_product_type:
+  1: null         # debit card — not a balance-bearing account
+  3: liability    # Tarjeta Crédito
+  10: asset       # Cuenta de efectivo
+  17: asset       # Cuenta SIN NÓMINA
+  20: asset       # Cuenta NARANJA
+  42: investment  # Cuenta de valores

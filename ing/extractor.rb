@@ -6,21 +6,20 @@
 # holding the raw movement list returned by the API.
 #
 # Extracted from scripts/lib/push_data/sources/ing.rb#fetch_payload.
+
+require "freentonic"
+Freentonic::Providers::Config.load_provider!(__dir__)
+
 module Freentonic
   module Providers
     module Ing
       class Extractor
-        # Same mapping as app/services/bank_sync/ing/sync_service.rb KIND_BY_PRODUCT_TYPE.
-        # Kept here (not in the YAML) so the Extractor can log which products
-        # it skipped and why.
-        KIND_BY_PRODUCT_TYPE = {
-          1  => nil,           # debit card — not a balance-bearing account
-          3  => "liability",   # Tarjeta Crédito
-          10 => "asset",       # Cuenta de efectivo
-          17 => "asset",       # Cuenta SIN NÓMINA
-          20 => "asset",       # Cuenta NARANJA
-          42 => "investment"   # Cuenta de valores
-        }.freeze
+        # Numeric ING product type → canonical kind. Sourced from
+        # ing/config.yml so a per-provider PR that adjusts the mapping
+        # is a YAML diff rather than a Ruby diff. The Extractor still
+        # references it via this constant so it can log which products
+        # were skipped and why.
+        KIND_BY_PRODUCT_TYPE = Freentonic::Providers::Config.for(:ing).fetch(:kind_by_product_type).freeze
 
         def call(client:, credentials:, from_date:, stdout:, stderr:)
           products = client.fetch_products_legacy_shape
