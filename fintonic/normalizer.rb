@@ -117,19 +117,10 @@ module Freentonic
             merchant:        build_merchant(tx),
             category:        category_path,
             metadata: {
-              "fintonic" => {
-                "id"              => tx_id,
-                "reference"       => tx["reference"],
-                "category_path"   => category_path,
-                "category_id"     => category_id,
-                "operationDate"   => tx["operationDate"],
-                "valueDate"       => tx["valueDate"],
-                "userDate"        => tx["userDate"],
-                "description"     => tx["description"],
-                "cleanNote"       => tx["cleanNote"],
-                "userDescription" => tx["userDescription"],
-                "primaryDisplay"  => tx["primaryDisplay"]
-              }
+              "fintonic" => extract_fields(tx, RAW_FIELDS_TRANSACTION).merge(
+                "category_path" => category_path,
+                "category_id"   => category_id
+              )
             },
             **LegacyKeys.transaction(institution: INSTITUTION, tx_id: tx_id)
           )

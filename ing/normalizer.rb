@@ -106,7 +106,7 @@ module Freentonic
             description:     cleaned,
             raw_description: raw_description,
             status:     Builder.map_status(ing_pending_status(mv)),
-            metadata:   { "ing" => build_raw_fields(mv) },
+            metadata:   { "ing" => extract_fields(mv, RAW_FIELDS_MOVEMENT) },
             **LegacyKeys.transaction(institution: INSTITUTION,
                                      account_source_id: product["uuid"],
                                      tx_source_id: mv_uuid)
@@ -120,30 +120,6 @@ module Freentonic
 
         def ing_pending_status(mv)
           mv.dig("status", "description") == ING_PENDING_STATUS ? "pending" : "settled"
-        end
-
-        def build_raw_fields(mv)
-          {
-            "uuid"               => mv["uuid"],
-            "operationId"        => mv["operationId"],
-            "status"             => mv.dig("status", "description"),
-            "tranCode"           => mv["tranCode"],
-            "typeCod"            => mv["typeCod"],
-            "typeDesc"           => mv["typeDesc"],
-            "store"              => mv["store"],
-            "description"        => mv["description"],
-            "effectiveDate"      => mv["effectiveDate"],
-            "chargeDate"         => mv["chargeDate"],
-            "clearingDate"       => mv["clearingDate"],
-            "clearanceStartDate" => mv["clearanceStartDate"],
-            "clearanceEndDate"   => mv["clearanceEndDate"],
-            "cardNumber"         => mv["cardNumber"],
-            "opCountry"          => mv["opCountry"],
-            "opHour"             => mv["opHour"],
-            "ecommerce"          => mv["ecommerce"],
-            "originAmount"       => mv["originAmount"],
-            "amount"             => mv["amount"]
-          }
         end
 
       end

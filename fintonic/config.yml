@@ -12,3 +12,18 @@ kind_by_type:
   ACCOUNT:     asset
   CREDIT_CARD: liability
   CREDITCARD:  liability
+
+# Allowlist of raw transaction fields preserved into transaction.metadata.
+# Only the simple-rename fields live here; category_path and category_id
+# are computed from the category_map at call time and merged in
+# imperatively (Ruby) since their values aren't a pure projection of tx.
+raw_fields_transaction:
+  id:               id
+  reference:        reference
+  operationDate:    operationDate
+  valueDate:        valueDate
+  userDate:         userDate
+  description:      description
+  cleanNote:        cleanNote
+  userDescription:  userDescription
+  primaryDisplay:   primaryDisplay

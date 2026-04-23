@@ -25,3 +25,28 @@ kind_by_product_type:
   17: asset       # Cuenta SIN NÓMINA
   20: asset       # Cuenta NARANJA
   42: investment  # Cuenta de valores
+
+# Allowlist of raw movement fields preserved into transaction.metadata
+# for debugging / reconciliation. Source key on the right; output key
+# on the left. Dotted paths walk nested hashes (status.description →
+# mv.dig("status", "description")).
+raw_fields_movement:
+  uuid:                uuid
+  operationId:         operationId
+  status:              status.description
+  tranCode:            tranCode
+  typeCod:             typeCod
+  typeDesc:            typeDesc
+  store:               store
+  description:         description
+  effectiveDate:       effectiveDate
+  chargeDate:          chargeDate
+  clearingDate:        clearingDate
+  clearanceStartDate:  clearanceStartDate
+  clearanceEndDate:    clearanceEndDate
+  cardNumber:          cardNumber
+  opCountry:           opCountry
+  opHour:              opHour
+  ecommerce:           ecommerce
+  originAmount:        originAmount
+  amount:              amount
