@@ -1,6 +1,7 @@
 # frozen_string_literal: true
 
 require "date"
+require "freentonic"
 
 # Unicaja extractor: fetches cuentas + tarjetas + prestamos, then
 # per-product movements. Produces a Hash with four slots that the
@@ -17,7 +18,9 @@ require "date"
 module Freentonic
   module Providers
     module Unicaja
-      class Extractor
+      class Extractor < Freentonic::Providers::ExtractorBase
+        provider!(__dir__)
+
         RECENT_WINDOW_DAYS = 30
         MAX_MOVEMENTS_SAFETY_CAP = 10_000
 
@@ -33,12 +36,7 @@ module Freentonic
           stdout.puts "    -> #{tarjetas.size} tarjetas"
 
           stdout.puts "  Fetching prestamos..."
-          raw_prestamos = begin
-            client.fetch_listaprestamos
-          rescue StandardError => error
-            stderr.puts "    x #{error.class}: #{error.message}"
-            {}
-          end
+          raw_prestamos = safe_fetch(stderr, "prestamos") { client.fetch_listaprestamos } || {}
           prestamos = Array(raw_prestamos["prestamos"]) + Array(raw_prestamos["prestamosAvalados"])
           stdout.puts "    -> #{prestamos.size} prestamos"
 
@@ -52,30 +50,30 @@ module Freentonic
 
             # 1) Standard fetch — always runs (recent window)
             stdout.puts "  Fetching movements for cuenta #{ppp}..."
-            begin
-              recent = client.fetch_all_account_movements(ppp: ppp, fecha_desde: recent_from.to_s)
-              stdout.puts "    -> #{recent.size} movements (standard)"
-            rescue StandardError => error
-              stderr.puts "    x #{error.class}: #{error.message}"
-              recent = []
-            end
+            recent = safe_fetch(stderr, "movements") {
+              r = client.fetch_all_account_movements(ppp: ppp, fecha_desde: recent_from.to_s)
+              stdout.puts "    -> #{r.size} movements (standard)"
+              r
+            } || []
 
             # 2) Extended fetch — only when >30 days (armed session required)
             if extended
               stdout.puts "  Fetching extended history for cuenta #{ppp}..."
-              begin
-                old = fetch_extended_movements(
+              old = safe_fetch(stderr, "extended fetch failed") {
+                o = fetch_extended_movements(
                   client:    client,
                   ppp:       ppp,
                   from_date: from_date,
                   to_date:   recent_from,
                   stdout:    stdout
                 )
-                stdout.puts "    -> #{old.size} movements (extended)"
+                stdout.puts "    -> #{o.size} movements (extended)"
+                o
+              }
+              if old
                 cuenta_movements[ppp] = merge_movements(old, recent)
                 stdout.puts "    -> #{cuenta_movements[ppp].size} movements total (deduplicated)"
-              rescue StandardError => error
-                stderr.puts "    x extended fetch failed: #{error.class}: #{error.message}"
+              else
                 cuenta_movements[ppp] = recent
               end
             else
@@ -97,14 +95,11 @@ module Freentonic
             end
 
             stdout.puts "  Fetching movements for tarjeta #{ppp}..."
-            begin
-              movements = client.fetch_all_card_movements(ppp: ppp, fecha_desde: from_date.to_s)
-              tarjeta_movements[ppp] = movements
-              stdout.puts "    -> #{movements.size} movements"
-            rescue StandardError => error
-              stderr.puts "    x #{error.class}: #{error.message}"
-              tarjeta_movements[ppp] = []
-            end
+            tarjeta_movements[ppp] = safe_fetch(stderr, "movements") {
+              m = client.fetch_all_card_movements(ppp: ppp, fecha_desde: from_date.to_s)
+              stdout.puts "    -> #{m.size} movements"
+              m
+            } || []
           end
 
           {

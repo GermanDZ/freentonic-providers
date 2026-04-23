@@ -3,23 +3,15 @@
 require "date"
 require "bigdecimal"
 require "freentonic"
-Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Fintonic
-      class Normalizer < Freentonic::Normalizers::Base
-        include Freentonic::Providers::Helpers
-        Builder = Freentonic::Providers::CanonicalBuilder
-        LegacyKeys = Freentonic::Providers::LegacyKeys
-
-        KIND_BY_TYPE = {
-          "ACCOUNT"     => "asset",
-          "CREDIT_CARD" => "liability",
-          "CREDITCARD"  => "liability"
-        }.freeze
-        INSTITUTION = "fintonic"
-        SCRAPER_VERSION = "fintonic/0.2"
+      class Normalizer < Freentonic::Providers::NormalizerBase
+        provider!(__dir__)
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_TYPE all
+        # come from fintonic/config.yml. Builder, LegacyKeys, Helpers
+        # inherited.
 
         def call(raw, context: {})
           category_map = build_category_map(raw["categoryTree"] || {})
@@ -125,19 +117,10 @@ module Freentonic
             merchant:        build_merchant(tx),
             category:        category_path,
             metadata: {
-              "fintonic" => {
-                "id"              => tx_id,
-                "reference"       => tx["reference"],
-                "category_path"   => category_path,
-                "category_id"     => category_id,
-                "operationDate"   => tx["operationDate"],
-                "valueDate"       => tx["valueDate"],
-                "userDate"        => tx["userDate"],
-                "description"     => tx["description"],
-                "cleanNote"       => tx["cleanNote"],
-                "userDescription" => tx["userDescription"],
-                "primaryDisplay"  => tx["primaryDisplay"]
-              }
+              "fintonic" => extract_fields(tx, RAW_FIELDS_TRANSACTION).merge(
+                "category_path" => category_path,
+                "category_id"   => category_id
+              )
             },
             **LegacyKeys.transaction(institution: INSTITUTION, tx_id: tx_id)
           )

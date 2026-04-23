@@ -4,22 +4,15 @@ require "date"
 require "digest"
 require "bigdecimal"
 require "freentonic"
-Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Unicaja
-      class Normalizer < Freentonic::Normalizers::Base
-        include Freentonic::Providers::Helpers
-        Builder = Freentonic::Providers::CanonicalBuilder
-        LegacyKeys = Freentonic::Providers::LegacyKeys
-
-        INSTITUTION = "unicaja"
-        SCRAPER_VERSION = "unicaja/0.2"
-
-        # Spanish-format dates dominate Unicaja's feed; hint the helper
-        # so ambiguous DD/MM/YYYY strings aren't flipped.
-        UNICAJA_DATE_FORMATS = ["%d/%m/%Y"].freeze
+      class Normalizer < Freentonic::Providers::NormalizerBase
+        provider!(__dir__)
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, UNICAJA_DATE_FORMATS
+        # come from unicaja/config.yml. Builder, LegacyKeys, Helpers
+        # inherited.
 
         def call(raw, context: {})
           @cuenta_movements  = raw["cuenta_movements"] || {}
@@ -71,7 +64,7 @@ module Freentonic
             institution: INSTITUTION,
             source_id:   "cuenta:#{ppp}",
             currency:    c["divisa"] || c["moneda"] || "EUR",
-            name:        pick_name(c["alias"], c["descripcion"], "Unicaja #{ppp}"),
+            name:        first_present(c["alias"], c["descripcion"], "Unicaja #{ppp}"),
             type:        "checking",
             iban:        c["iban"] || c["IBAN"],
             balance: {
@@ -98,7 +91,7 @@ module Freentonic
             institution: INSTITUTION,
             source_id:   "tarjeta:#{ppp}",
             currency:    t["divisa"] || t["moneda"] || "EUR",
-            name:        pick_name(t["alias"], t["tipotarjeta"], "Unicaja card #{ppp}", t["descripcion"]),
+            name:        first_present(t["alias"], t["tipotarjeta"], "Unicaja card #{ppp}", t["descripcion"]),
             type:        "credit_card",
             iban:        nil,
             balance: {
@@ -140,7 +133,7 @@ module Freentonic
             institution: INSTITUTION,
             source_id:   "prestamo:#{ppp}",
             currency:    l.dig("saldo", "moneda") || "EUR",
-            name:        pick_name(l["alias"], l["descripcion"], "Unicaja loan #{ppp}"),
+            name:        first_present(l["alias"], l["descripcion"], "Unicaja loan #{ppp}"),
             type:        "loan",
             iban:        nil,
             balance: {
@@ -211,14 +204,6 @@ module Freentonic
 
         def ppp_for(product)
           product["ppp"] || product["codigoProducto"] || product["id"]
-        end
-
-        def pick_name(*candidates)
-          candidates.each do |c|
-            s = c.to_s.strip
-            return s unless s.empty?
-          end
-          candidates.last.to_s
         end
 
         def movement_id(mv)

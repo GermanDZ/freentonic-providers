@@ -11,8 +11,8 @@ require "freentonic"
 module Freentonic
   module Providers
     module Fintonic
-      class Extractor
-        include Freentonic::Providers::Helpers
+      class Extractor < Freentonic::Providers::ExtractorBase
+        provider!(__dir__)
 
         PAGE_LIMIT = 100
 

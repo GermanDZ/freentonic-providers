@@ -4,24 +4,15 @@ require "date"
 require "bigdecimal"
 require "freentonic"
 require_relative "extractor"
-Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers
     module Ing
-      class Normalizer < Freentonic::Normalizers::Base
-        include Freentonic::Providers::Helpers
-        Builder = Freentonic::Providers::CanonicalBuilder
-        LegacyKeys = Freentonic::Providers::LegacyKeys
-
-        # Spanish-format dates dominate ING's feed; hint the helper so
-        # Date.parse doesn't flip DD/MM for months ≤ 12.
-        ING_DATE_FORMATS = ["%d/%m/%Y"].freeze
-
-        KIND_BY_PRODUCT_TYPE = Extractor::KIND_BY_PRODUCT_TYPE
-        ING_PENDING_STATUS = "Pendiente de liquidar"
-        INSTITUTION = "ing"
-        SCRAPER_VERSION = "ing/0.2"
+      class Normalizer < Freentonic::Providers::NormalizerBase
+        provider!(__dir__)
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_PRODUCT_TYPE,
+        # ING_DATE_FORMATS, ING_PENDING_STATUS all come from
+        # ing/config.yml. Builder, LegacyKeys, Helpers inherited.
 
         def call(raw, context: {})
           accounts, liabilities, transactions = [], [], []
@@ -115,7 +106,7 @@ module Freentonic
             description:     cleaned,
             raw_description: raw_description,
             status:     Builder.map_status(ing_pending_status(mv)),
-            metadata:   { "ing" => build_raw_fields(mv) },
+            metadata:   { "ing" => extract_fields(mv, RAW_FIELDS_MOVEMENT) },
             **LegacyKeys.transaction(institution: INSTITUTION,
                                      account_source_id: product["uuid"],
                                      tx_source_id: mv_uuid)
@@ -123,36 +114,11 @@ module Freentonic
         end
 
         def pick_name(product)
-          alias_name = product["alias"].to_s.strip
-          alias_name.empty? ? (product["name"] || "ING") : alias_name
+          first_present(product["alias"], product["name"]) || "ING"
         end
 
         def ing_pending_status(mv)
           mv.dig("status", "description") == ING_PENDING_STATUS ? "pending" : "settled"
-        end
-
-        def build_raw_fields(mv)
-          {
-            "uuid"               => mv["uuid"],
-            "operationId"        => mv["operationId"],
-            "status"             => mv.dig("status", "description"),
-            "tranCode"           => mv["tranCode"],
-            "typeCod"            => mv["typeCod"],
-            "typeDesc"           => mv["typeDesc"],
-            "store"              => mv["store"],
-            "description"        => mv["description"],
-            "effectiveDate"      => mv["effectiveDate"],
-            "chargeDate"         => mv["chargeDate"],
-            "clearingDate"       => mv["clearingDate"],
-            "clearanceStartDate" => mv["clearanceStartDate"],
-            "clearanceEndDate"   => mv["clearanceEndDate"],
-            "cardNumber"         => mv["cardNumber"],
-            "opCountry"          => mv["opCountry"],
-            "opHour"             => mv["opHour"],
-            "ecommerce"          => mv["ecommerce"],
-            "originAmount"       => mv["originAmount"],
-            "amount"             => mv["amount"]
-          }
         end
 
       end

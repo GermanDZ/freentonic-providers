@@ -1,0 +1,52 @@
+# Per-provider declarative config for ING.
+#
+# Loaded by Freentonic::Providers::Config.load_provider!(__dir__) at the
+# top of normalizer.rb / extractor.rb. Parsed via YAML.safe_load with
+# permitted_classes=[] and aliases=false — pure data only; a PR that
+# adds Ruby here cannot execute.
+
+institution: ing
+scraper_version: ing/0.2
+
+# Spanish-format dates dominate ING's feed; hint Helpers#parse_date so
+# DD/MM is not flipped for months ≤ 12.
+ing_date_formats:
+  - "%d/%m/%Y"
+
+# Source-side status string indicating a movement is pending settlement.
+ing_pending_status: "Pendiente de liquidar"
+
+# Numeric ING product type → canonical kind. nil means "not balance-bearing"
+# and the product is dropped before reaching the canonical pipeline.
+kind_by_product_type:
+  1: null         # debit card — not a balance-bearing account
+  3: liability    # Tarjeta Crédito
+  10: asset       # Cuenta de efectivo
+  17: asset       # Cuenta SIN NÓMINA
+  20: asset       # Cuenta NARANJA
+  42: investment  # Cuenta de valores
+
+# Allowlist of raw movement fields preserved into transaction.metadata
+# for debugging / reconciliation. Source key on the right; output key
+# on the left. Dotted paths walk nested hashes (status.description →
+# mv.dig("status", "description")).
+raw_fields_movement:
+  uuid:                uuid
+  operationId:         operationId
+  status:              status.description
+  tranCode:            tranCode
+  typeCod:             typeCod
+  typeDesc:            typeDesc
+  store:               store
+  description:         description
+  effectiveDate:       effectiveDate
+  chargeDate:          chargeDate
+  clearingDate:        clearingDate
+  clearanceStartDate:  clearanceStartDate
+  clearanceEndDate:    clearanceEndDate
+  cardNumber:          cardNumber
+  opCountry:           opCountry
+  opHour:              opHour
+  ecommerce:           ecommerce
+  originAmount:        originAmount
+  amount:              amount
