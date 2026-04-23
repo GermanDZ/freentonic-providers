@@ -2,7 +2,10 @@ require "rake/testtask"
 
 # One test task per provider directory (ing/test/**, unicaja/test/**, ...).
 # Running `rake test` runs them all; `rake test:ing` runs just ING's.
-provider_dirs = Dir["*/test"].map { |d| File.dirname(d) }.reject { |d| d == "lib" }.sort
+# Shared-helper tests (canonical_builder, helpers, legacy_keys, legacy_keys_loader)
+# now live in the freentonic gem itself as of 0.3.0 — run them via
+# `bundle exec rake test` from that repo.
+provider_dirs = Dir["*/test"].map { |d| File.dirname(d) }.sort
 
 namespace :test do
   provider_dirs.each do |provider|
@@ -13,18 +16,10 @@ namespace :test do
       t.description = "Run tests for the #{provider} provider"
     end
   end
-
-  desc "Run shared helper tests"
-  Rake::TestTask.new(:helpers) do |t|
-    t.libs << "lib"
-    t.test_files = FileList["lib/test/**/*_test.rb"]
-    t.warning = false
-    t.description = "Run shared helper tests"
-  end
 end
 
-desc "Run tests for every provider + shared helpers"
-task test: provider_dirs.map { |p| "test:#{p}" } + ["test:helpers"]
+desc "Run tests for every provider"
+task test: provider_dirs.map { |p| "test:#{p}" }
 
 task default: :test
 
@@ -35,7 +30,7 @@ task :new, [:name] do |_, args|
   name = args[:name]
   abort "Usage: rake new[provider_name]" unless name && !name.empty?
 
-  require_relative "lib/freentonic/providers/scaffold"
+  require "freentonic/providers/scaffold"
   scaffold = Freentonic::Providers::Scaffold.new(name)
 
   if Dir.exist?(scaffold.dir)
@@ -72,7 +67,7 @@ task :har, [:path, :host] do |_, args|
   expanded = File.expand_path(path)
   abort "File not found: #{expanded}" unless File.exist?(expanded)
 
-  require_relative "lib/freentonic/providers/har_analyzer"
+  require "freentonic/providers/har_analyzer"
   analyzer = Freentonic::Providers::HarAnalyzer.new(expanded)
   puts analyzer.report(api_host: host)
 end

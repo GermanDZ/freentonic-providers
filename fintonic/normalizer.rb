@@ -3,10 +3,7 @@
 require "date"
 require "bigdecimal"
 require "freentonic"
-require_relative "../lib/freentonic/providers/helpers"
-require_relative "../lib/freentonic/providers/canonical_builder"
-require_relative "../lib/freentonic/providers/legacy_keys_loader"
-Freentonic::Providers::LegacyKeysLoader.load_all!
+Freentonic::Providers::LegacyKeysLoader.load_provider!(__dir__)
 
 module Freentonic
   module Providers

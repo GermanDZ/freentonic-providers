@@ -6,7 +6,7 @@
 #
 # Adapted from finanzas/fintonic_export.rb cmd_export + fetch_all_transactions.
 
-require_relative "../lib/freentonic/providers/helpers"
+require "freentonic"
 
 module Freentonic
   module Providers
