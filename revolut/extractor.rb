@@ -1,7 +1,11 @@
+require "freentonic"
+
 module Freentonic
   module Providers
     module Revolut
-      class Extractor
+      class Extractor < Freentonic::Providers::ExtractorBase
+        provider!(__dir__)
+
         MAX_TRANSACTIONS_SAFETY_CAP = 10_000
         PAGE_SIZE = 50
 
@@ -104,30 +108,6 @@ module Freentonic
         def last_timestamp(tx)
           return nil unless tx.is_a?(Hash)
           tx["startedDate"] || tx["completedDate"] || tx["createdDate"]
-        end
-
-        def parse_timestamp_ms(value)
-          case value
-          when Numeric
-            value.to_i
-          when String
-            if value =~ /\A\d+\z/
-              value.to_i
-            else
-              # ISO 8601 → Unix ms
-              require "time"
-              (Time.parse(value).to_f * 1000).to_i
-            end
-          end
-        rescue
-          nil
-        end
-
-        def safe_fetch(stderr, label)
-          yield
-        rescue StandardError => error
-          stderr.puts "    ✗ #{label}: #{error.class}: #{error.message}"
-          nil
         end
       end
     end

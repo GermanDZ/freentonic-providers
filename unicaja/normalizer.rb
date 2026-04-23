@@ -64,7 +64,7 @@ module Freentonic
             institution: INSTITUTION,
             source_id:   "cuenta:#{ppp}",
             currency:    c["divisa"] || c["moneda"] || "EUR",
-            name:        pick_name(c["alias"], c["descripcion"], "Unicaja #{ppp}"),
+            name:        first_present(c["alias"], c["descripcion"], "Unicaja #{ppp}"),
             type:        "checking",
             iban:        c["iban"] || c["IBAN"],
             balance: {
@@ -91,7 +91,7 @@ module Freentonic
             institution: INSTITUTION,
             source_id:   "tarjeta:#{ppp}",
             currency:    t["divisa"] || t["moneda"] || "EUR",
-            name:        pick_name(t["alias"], t["tipotarjeta"], "Unicaja card #{ppp}", t["descripcion"]),
+            name:        first_present(t["alias"], t["tipotarjeta"], "Unicaja card #{ppp}", t["descripcion"]),
             type:        "credit_card",
             iban:        nil,
             balance: {
@@ -133,7 +133,7 @@ module Freentonic
             institution: INSTITUTION,
             source_id:   "prestamo:#{ppp}",
             currency:    l.dig("saldo", "moneda") || "EUR",
-            name:        pick_name(l["alias"], l["descripcion"], "Unicaja loan #{ppp}"),
+            name:        first_present(l["alias"], l["descripcion"], "Unicaja loan #{ppp}"),
             type:        "loan",
             iban:        nil,
             balance: {
@@ -204,14 +204,6 @@ module Freentonic
 
         def ppp_for(product)
           product["ppp"] || product["codigoProducto"] || product["id"]
-        end
-
-        def pick_name(*candidates)
-          candidates.each do |c|
-            s = c.to_s.strip
-            return s unless s.empty?
-          end
-          candidates.last.to_s
         end
 
         def movement_id(mv)

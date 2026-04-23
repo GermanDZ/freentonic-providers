@@ -114,8 +114,7 @@ module Freentonic
         end
 
         def pick_name(product)
-          alias_name = product["alias"].to_s.strip
-          alias_name.empty? ? (product["name"] || "ING") : alias_name
+          first_present(product["alias"], product["name"]) || "ING"
         end
 
         def ing_pending_status(mv)
