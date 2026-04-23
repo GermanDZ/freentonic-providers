@@ -4,12 +4,28 @@ require "date"
 require "bigdecimal"
 require "freentonic"
 require_relative "../lib/freentonic/providers/canonical_builder"
+require_relative "../lib/freentonic/providers/legacy_keys"
+
+Freentonic::Providers::LegacyKeys.register(:revolut,
+  account: {
+    external_id: "revolut_live:%{kind}:%{source_ref}",
+    uids:        ["revolut_live:%{kind}:%{source_ref}"],
+    bank_key: {
+      default:  "revolut",
+      if_vault: "revolut_vault"
+    }
+  },
+  transaction: {
+    dedup_key: "revolut_live:%{pocket_id}:%{tx_id}"
+  }
+)
 
 module Freentonic
   module Providers
     module Revolut
       class Normalizer < Freentonic::Normalizers::Base
         Builder = Freentonic::Providers::CanonicalBuilder
+        LegacyKeys = Freentonic::Providers::LegacyKeys
 
         INSTITUTION = "revolut"
         SCRAPER_VERSION = "revolut/0.2"
@@ -62,9 +78,7 @@ module Freentonic
               "revolut_type"      => pocket["type"],
               "balance_source"    => "revolut_live:wallet"
             },
-            legacy_external_id: "revolut_live:pocket:#{pocket_id}",
-            legacy_uids:        ["revolut_live:pocket:#{pocket_id}"],
-            legacy_bank_key:    "revolut"
+            **LegacyKeys.account(institution: INSTITUTION, kind: "pocket", source_ref: pocket_id)
           )
         end
 
@@ -90,9 +104,7 @@ module Freentonic
               "revolut_goal"     => vault["goal"],
               "balance_source"   => "revolut_live:vault"
             },
-            legacy_external_id: "revolut_live:vault:#{vault_id}",
-            legacy_uids:        ["revolut_live:vault:#{vault_id}"],
-            legacy_bank_key:    "revolut_vault"
+            **LegacyKeys.account(institution: INSTITUTION, kind: "vault", source_ref: vault_id)
           )
         end
 
@@ -121,7 +133,8 @@ module Freentonic
             raw_description: raw_description,
             merchant:        build_merchant(tx),
             metadata:        { "revolut" => tx },
-            legacy_dedup_key: "revolut_live:#{pocket["id"]}:#{tx_id}"
+            **LegacyKeys.transaction(institution: INSTITUTION,
+                                     pocket_id: pocket["id"], tx_id: tx_id)
           )
         end
 

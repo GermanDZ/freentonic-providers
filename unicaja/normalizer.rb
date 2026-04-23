@@ -5,12 +5,29 @@ require "digest"
 require "bigdecimal"
 require "freentonic"
 require_relative "../lib/freentonic/providers/canonical_builder"
+require_relative "../lib/freentonic/providers/legacy_keys"
+
+Freentonic::Providers::LegacyKeys.register(:unicaja,
+  account: {
+    external_id: "unicaja_live:%{kind}:%{ppp}",
+    uids:        ["unicaja_live:%{kind}:%{ppp}"],
+    bank_key: {
+      default:     "unicaja",
+      if_tarjeta:  "unicaja_cc",
+      if_prestamo: "unicaja_loan"
+    }
+  },
+  transaction: {
+    dedup_key: "unicaja_live:%{ppp}:%{mv_id}"
+  }
+)
 
 module Freentonic
   module Providers
     module Unicaja
       class Normalizer < Freentonic::Normalizers::Base
         Builder = Freentonic::Providers::CanonicalBuilder
+        LegacyKeys = Freentonic::Providers::LegacyKeys
 
         INSTITUTION = "unicaja"
         SCRAPER_VERSION = "unicaja/0.2"
@@ -77,9 +94,7 @@ module Freentonic
               "unicaja_kind"   => "cuenta",
               "balance_source" => "unicaja_live:listacuentas"
             },
-            legacy_external_id: "unicaja_live:cuenta:#{ppp}",
-            legacy_uids:        ["unicaja_live:cuenta:#{ppp}"],
-            legacy_bank_key:    "unicaja"
+            **LegacyKeys.account(institution: INSTITUTION, kind: "cuenta", ppp: ppp)
           )
         end
 
@@ -107,9 +122,7 @@ module Freentonic
               "unicaja_codtipotarjeta" => t["codtipotarjeta"],
               "balance_source"         => balance_cents ? "unicaja_live:listatarjetas" : nil
             },
-            legacy_external_id: "unicaja_live:tarjeta:#{ppp}",
-            legacy_uids:        ["unicaja_live:tarjeta:#{ppp}"],
-            legacy_bank_key:    "unicaja_cc"
+            **LegacyKeys.account(institution: INSTITUTION, kind: "tarjeta", ppp: ppp)
           )
         end
 
@@ -151,9 +164,7 @@ module Freentonic
               "unicaja_loan_type" => detect_loan_type(l),
               "balance_source"    => balance_cents ? "unicaja_live:listaprestamos" : nil
             },
-            legacy_external_id: "unicaja_live:prestamo:#{ppp}",
-            legacy_uids:        ["unicaja_live:prestamo:#{ppp}"],
-            legacy_bank_key:    "unicaja_loan"
+            **LegacyKeys.account(institution: INSTITUTION, kind: "prestamo", ppp: ppp)
           )
         end
 
@@ -202,7 +213,7 @@ module Freentonic
             description:     cleaned_desc,
             raw_description: raw_description,
             metadata:        { "unicaja_movement" => mv, "ppp" => ppp },
-            legacy_dedup_key: "unicaja_live:#{ppp}:#{mv_id}"
+            **LegacyKeys.transaction(institution: INSTITUTION, ppp: ppp, mv_id: mv_id)
           )
         end
 

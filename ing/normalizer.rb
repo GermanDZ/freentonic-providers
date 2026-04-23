@@ -5,12 +5,31 @@ require "bigdecimal"
 require "freentonic"
 require_relative "extractor"
 require_relative "../lib/freentonic/providers/canonical_builder"
+require_relative "../lib/freentonic/providers/legacy_keys"
+
+Freentonic::Providers::LegacyKeys.register(:ing,
+  account: {
+    external_id: "ing_live:%{source_id}",
+    uids: {
+      default:      ["ing_live:%{source_id}"],
+      if_liability: ["ing-cc-%{source_id}", "ing_live:%{source_id}"]
+    },
+    bank_key: {
+      default:      "ing",
+      if_liability: "ing_cc"
+    }
+  },
+  transaction: {
+    dedup_key: "ing_live:%{account_source_id}:%{tx_source_id}"
+  }
+)
 
 module Freentonic
   module Providers
     module Ing
       class Normalizer < Freentonic::Normalizers::Base
         Builder = Freentonic::Providers::CanonicalBuilder
+        LegacyKeys = Freentonic::Providers::LegacyKeys
 
         KIND_BY_PRODUCT_TYPE = Extractor::KIND_BY_PRODUCT_TYPE
         ING_PENDING_STATUS = "Pendiente de liquidar"
@@ -68,9 +87,7 @@ module Freentonic
               "ing_product_number" => product["productNumber"],
               "balance_source"     => balance_cents ? "ing_live:product_balance" : nil
             },
-            legacy_external_id: "ing_live:#{uuid}",
-            legacy_uids:        legacy_account_uids(kind, uuid),
-            legacy_bank_key:    kind == "liability" ? "ing_cc" : "ing"
+            **LegacyKeys.account(institution: INSTITUTION, source_id: uuid, kind: kind)
           )
         end
 
@@ -111,18 +128,15 @@ module Freentonic
             raw_description: raw_description,
             status:     Builder.map_status(ing_pending_status(mv)),
             metadata:   { "ing" => build_raw_fields(mv) },
-            legacy_dedup_key: "ing_live:#{product["uuid"]}:#{mv_uuid}"
+            **LegacyKeys.transaction(institution: INSTITUTION,
+                                     account_source_id: product["uuid"],
+                                     tx_source_id: mv_uuid)
           )
         end
 
         def pick_name(product)
           alias_name = product["alias"].to_s.strip
           alias_name.empty? ? (product["name"] || "ING") : alias_name
-        end
-
-        def legacy_account_uids(kind, uuid)
-          base = ["ing_live:#{uuid}"]
-          kind == "liability" ? ["ing-cc-#{uuid}"] + base : base
         end
 
         def ing_pending_status(mv)
