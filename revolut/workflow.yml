@@ -46,12 +46,17 @@ phases:
       value: "secret(USER_PASSCODE)"
 
   approve_2fa:
-    # After passcode, Revolut sends a push to the mobile app.
-    # wait_url for the /home path (not just the domain) ensures we
-    # wait for the actual post-login redirect, not match the SSO URL.
-    # If already logged in, the URL is already app.revolut.com/home.
+    # After passcode, Revolut sends a push to the mobile app. Upon
+    # approval the browser redirects from sso.revolut.com back to
+    # app.revolut.com. Matching on the app subdomain (not just "/home")
+    # is defensive: Revolut sometimes lands on an intermediate path
+    # before settling on /home, and the cross-origin hop from SSO can
+    # briefly leave CDP's window.location.href reading a stale URL —
+    # a broader includes fires as soon as either settles.
+    # sso.revolut.com does not contain "app.revolut.com/", so this
+    # reliably excludes the pre-login state.
     - action: wait_url
-      includes: "app.revolut.com/home"
+      includes: "app.revolut.com/"
       timeout: 300
 
   post_login:
