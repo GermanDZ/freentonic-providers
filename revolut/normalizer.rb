@@ -10,7 +10,7 @@ module Freentonic
       class Normalizer < Freentonic::Providers::NormalizerBase
         provider!(__dir__)
         # CONFIG, INSTITUTION, SCRAPER_VERSION come from revolut/config.yml.
-        # Builder, LegacyKeys, Helpers inherited.
+        # Builder, Helpers inherited.
 
         def call(raw, context: {})
           accounts, transactions = [], []
@@ -59,8 +59,7 @@ module Freentonic
               "revolut_pocket_id" => pocket_id,
               "revolut_type"      => pocket["type"],
               "balance_source"    => "revolut_live:wallet"
-            },
-            **LegacyKeys.account(institution: INSTITUTION, kind: "pocket", source_ref: pocket_id)
+            }
           )
         end
 
@@ -85,8 +84,7 @@ module Freentonic
               "revolut_vault_id" => vault_id,
               "revolut_goal"     => vault["goal"],
               "balance_source"   => "revolut_live:vault"
-            },
-            **LegacyKeys.account(institution: INSTITUTION, kind: "vault", source_ref: vault_id)
+            }
           )
         end
 
@@ -114,9 +112,7 @@ module Freentonic
             description:     cleaned,
             raw_description: raw_description,
             merchant:        build_merchant(tx),
-            metadata:        { "revolut" => tx },
-            **LegacyKeys.transaction(institution: INSTITUTION,
-                                     pocket_id: pocket["id"], tx_id: tx_id)
+            metadata:        { "revolut" => tx }
           )
         end
 

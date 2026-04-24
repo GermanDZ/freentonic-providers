@@ -73,14 +73,6 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal BigDecimal("1234.56"), acct.balance.current
   end
 
-  def test_pocket_legacy_compat_metadata
-    meta = normalizer.call(pocket_raw).accounts.first.metadata
-
-    assert_equal "revolut_live:pocket:pocket-eur-1", meta["legacy_external_id"]
-    assert_equal ["revolut_live:pocket:pocket-eur-1"], meta["legacy_uids"]
-    assert_equal "revolut", meta["legacy_bank_key"]
-  end
-
   def test_pocket_transactions
     payload = normalizer.call(pocket_raw)
     txn = payload.transactions.find { |t| t.source_id == "tx-1" }
@@ -90,7 +82,6 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal Date.new(2024, 3, 15),     txn.date
     assert_equal "Coffee Shop",            txn.description
     assert_equal "Coffee Shop",            txn.raw_description
-    assert_equal "revolut_live:pocket-eur-1:tx-1", txn.metadata["legacy_dedup_key"]
   end
 
   # --- vaults ------------------------------------------------------------
@@ -123,14 +114,6 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal "savings",              vault.type
     assert_equal "vault:vault-1",        vault.source_id
     assert_equal BigDecimal("350.00"),   vault.balance.current
-  end
-
-  def test_vault_legacy_compat_metadata_uses_vault_bank_key
-    meta = normalizer.call(vault_raw).accounts.first.metadata
-
-    assert_equal "revolut_live:vault:vault-1", meta["legacy_external_id"]
-    assert_equal ["revolut_live:vault:vault-1"], meta["legacy_uids"]
-    assert_equal "revolut_vault", meta["legacy_bank_key"]
   end
 
   # --- edge cases --------------------------------------------------------

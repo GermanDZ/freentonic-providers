@@ -12,7 +12,7 @@ module Freentonic
         provider!(__dir__)
         # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_PRODUCT_TYPE,
         # ING_DATE_FORMATS, ING_PENDING_STATUS all come from
-        # ing/config.yml. Builder, LegacyKeys, Helpers inherited.
+        # ing/config.yml. Builder, Helpers inherited.
 
         def call(raw, context: {})
           accounts, liabilities, transactions = [], [], []
@@ -64,8 +64,7 @@ module Freentonic
               "ing_product_type"   => product["type"],
               "ing_product_number" => product["productNumber"],
               "balance_source"     => balance_cents ? "ing_live:product_balance" : nil
-            },
-            **LegacyKeys.account(institution: INSTITUTION, source_id: uuid, kind: kind)
+            }
           )
         end
 
@@ -82,7 +81,7 @@ module Freentonic
           )
         end
 
-        def build_transaction(product, account, mv)
+        def build_transaction(_product, account, mv)
           mv_uuid = mv["uuid"]
           return nil unless mv_uuid
 
@@ -106,10 +105,7 @@ module Freentonic
             description:     cleaned,
             raw_description: raw_description,
             status:     Builder.map_status(ing_pending_status(mv)),
-            metadata:   { "ing" => extract_fields(mv, RAW_FIELDS_MOVEMENT) },
-            **LegacyKeys.transaction(institution: INSTITUTION,
-                                     account_source_id: product["uuid"],
-                                     tx_source_id: mv_uuid)
+            metadata:   { "ing" => extract_fields(mv, RAW_FIELDS_MOVEMENT) }
           )
         end
 
