@@ -11,8 +11,7 @@ module Freentonic
       class Normalizer < Freentonic::Providers::NormalizerBase
         provider!(__dir__)
         # CONFIG, INSTITUTION, SCRAPER_VERSION, UNICAJA_DATE_FORMATS
-        # come from unicaja/config.yml. Builder, LegacyKeys, Helpers
-        # inherited.
+        # come from unicaja/config.yml. Builder, Helpers inherited.
 
         def call(raw, context: {})
           @cuenta_movements  = raw["cuenta_movements"] || {}
@@ -75,8 +74,7 @@ module Freentonic
               "unicaja_ppp"    => ppp,
               "unicaja_kind"   => "cuenta",
               "balance_source" => "unicaja_live:listacuentas"
-            },
-            **LegacyKeys.account(institution: INSTITUTION, kind: "cuenta", ppp: ppp)
+            }
           )
         end
 
@@ -103,8 +101,7 @@ module Freentonic
               "unicaja_kind"           => "tarjeta",
               "unicaja_codtipotarjeta" => t["codtipotarjeta"],
               "balance_source"         => balance_cents ? "unicaja_live:listatarjetas" : nil
-            },
-            **LegacyKeys.account(institution: INSTITUTION, kind: "tarjeta", ppp: ppp)
+            }
           )
         end
 
@@ -145,8 +142,7 @@ module Freentonic
               "unicaja_kind"      => "prestamo",
               "unicaja_loan_type" => detect_loan_type(l),
               "balance_source"    => balance_cents ? "unicaja_live:listaprestamos" : nil
-            },
-            **LegacyKeys.account(institution: INSTITUTION, kind: "prestamo", ppp: ppp)
+            }
           )
         end
 
@@ -195,8 +191,7 @@ module Freentonic
             date:            date,
             description:     cleaned_desc,
             raw_description: raw_description,
-            metadata:        { "unicaja_movement" => mv, "ppp" => ppp },
-            **LegacyKeys.transaction(institution: INSTITUTION, ppp: ppp, mv_id: mv_id)
+            metadata:        { "unicaja_movement" => mv, "ppp" => ppp }
           )
         end
 

@@ -10,8 +10,7 @@ module Freentonic
       class Normalizer < Freentonic::Providers::NormalizerBase
         provider!(__dir__)
         # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_TYPE all
-        # come from fintonic/config.yml. Builder, LegacyKeys, Helpers
-        # inherited.
+        # come from fintonic/config.yml. Builder, Helpers inherited.
 
         def call(raw, context: {})
           category_map = build_category_map(raw["categoryTree"] || {})
@@ -68,10 +67,7 @@ module Freentonic
               "fintonic_bank_id"    => bank_id,
               "fintonic_product_id" => product_id,
               "fintonic_type"       => product_type
-            },
-            **LegacyKeys.account(institution: INSTITUTION,
-                                 bank_id: bank_id, product_id: product_id,
-                                 product_type: product_type)
+            }
           )
         end
 
@@ -121,8 +117,7 @@ module Freentonic
                 "category_path" => category_path,
                 "category_id"   => category_id
               )
-            },
-            **LegacyKeys.transaction(institution: INSTITUTION, tx_id: tx_id)
+            }
           )
         end
 

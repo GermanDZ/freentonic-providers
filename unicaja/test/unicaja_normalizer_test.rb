@@ -87,13 +87,6 @@ class UnicajaNormalizerTest < Minitest::Test
     assert_equal BigDecimal("1234.56"),   acct.balance.current
   end
 
-  def test_cuenta_legacy_metadata
-    meta = normalizer.call({ "cuentas" => [cuenta] }).accounts.first.metadata
-    assert_equal "unicaja_live:cuenta:C-001", meta["legacy_external_id"]
-    assert_equal ["unicaja_live:cuenta:C-001"], meta["legacy_uids"]
-    assert_equal "unicaja", meta["legacy_bank_key"]
-  end
-
   # --- tarjeta (credit card) --------------------------------------------
 
   def test_tarjeta_emits_account_and_liability
@@ -112,12 +105,6 @@ class UnicajaNormalizerTest < Minitest::Test
     assert_equal "credit_card",       liab.type
     assert_equal BigDecimal("500.00"),  liab.balance
     assert_equal BigDecimal("1500.00"), liab.limit
-  end
-
-  def test_tarjeta_legacy_metadata_uses_cc_bank_key
-    meta = normalizer.call({ "tarjetas" => [tarjeta] }).accounts.first.metadata
-    assert_equal "unicaja_live:tarjeta:T-001", meta["legacy_external_id"]
-    assert_equal "unicaja_cc", meta["legacy_bank_key"]
   end
 
   def test_skips_non_credit_tarjetas
@@ -142,12 +129,6 @@ class UnicajaNormalizerTest < Minitest::Test
     assert_equal "mortgage",  liab.type
   end
 
-  def test_prestamo_legacy_metadata
-    meta = normalizer.call({ "prestamos" => [prestamo] }).accounts.first.metadata
-    assert_equal "unicaja_live:prestamo:P-001", meta["legacy_external_id"]
-    assert_equal "unicaja_loan", meta["legacy_bank_key"]
-  end
-
   def test_non_mortgage_loan_detected_as_loan
     generic = prestamo(
       "alias" => "Crédito personal",
@@ -170,7 +151,6 @@ class UnicajaNormalizerTest < Minitest::Test
     assert_equal BigDecimal("-45.20"),  txn.amount
     assert_equal "EUR",                 txn.currency
     assert_equal "COFFEE SHOP",         txn.description
-    assert_equal "unicaja_live:C-001:M-1", txn.metadata["legacy_dedup_key"]
   end
 
   def test_transaction_fallback_id_is_sha1_hex
@@ -181,7 +161,6 @@ class UnicajaNormalizerTest < Minitest::Test
 
     refute_nil txn
     assert_match(/\Ah:[0-9a-f]{16}\z/, txn.source_id)
-    assert_match(/\Aunicaja_live:C-001:h:[0-9a-f]{16}\z/, txn.metadata["legacy_dedup_key"])
   end
 
   def test_skips_zero_amount_movements

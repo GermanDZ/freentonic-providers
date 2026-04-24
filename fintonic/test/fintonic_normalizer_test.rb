@@ -63,15 +63,6 @@ class FintonicNormalizerTest < Minitest::Test
     assert_equal "1465", acct.metadata["fintonic_bank_id"]
   end
 
-  def test_account_legacy_compat_metadata
-    payload = normalizer.call(make_raw)
-    meta = payload.accounts.first.metadata
-
-    assert_equal "fintonic:1465:9001", meta["legacy_external_id"]
-    assert_equal ["fintonic-1465-9001-ACCOUNT"], meta["legacy_uids"]
-    assert_equal "fintonic_1465", meta["legacy_bank_key"]
-  end
-
   # --- credit cards ------------------------------------------------------
 
   def test_credit_card_underscore_emits_account_plus_liability
@@ -79,7 +70,7 @@ class FintonicNormalizerTest < Minitest::Test
     acct = payload.accounts.first
 
     assert_equal "credit_card", acct.type
-    assert_equal ["fintonic-1465-9001-CREDIT_CARD"], acct.metadata["legacy_uids"]
+    assert_equal "CREDIT_CARD", acct.metadata["fintonic_type"]
 
     assert_equal 1, payload.liabilities.size
     liab = payload.liabilities.first
@@ -91,8 +82,8 @@ class FintonicNormalizerTest < Minitest::Test
   def test_creditcard_no_underscore_is_liability
     payload = normalizer.call(make_raw(transactions: [make_tx("type" => "CREDITCARD")]))
 
-    assert_equal ["fintonic-1465-9001-CREDITCARD"],
-                 payload.accounts.first.metadata["legacy_uids"]
+    assert_equal "CREDITCARD",
+                 payload.accounts.first.metadata["fintonic_type"]
     assert_equal 1, payload.liabilities.size
   end
 
@@ -110,11 +101,6 @@ class FintonicNormalizerTest < Minitest::Test
     assert_equal "EUR",              txn.currency
     assert_equal "MERCADONA",        txn.raw_description
     assert_equal "MERCADONA",        txn.description
-  end
-
-  def test_transaction_legacy_dedup_key
-    payload = normalizer.call(make_raw)
-    assert_equal "fintonic:tx-1", payload.transactions.first.metadata["legacy_dedup_key"]
   end
 
   def test_positive_amount_is_income

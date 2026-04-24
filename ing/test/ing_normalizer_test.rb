@@ -62,14 +62,10 @@ class IngNormalizerTest < Minitest::Test
     assert_nil               acct.balance.timestamp
   end
 
-  def test_asset_account_legacy_compat_metadata
+  def test_asset_account_provider_metadata_is_preserved
     payload = normalizer.call([asset_product])
     acct = payload.accounts.first
 
-    assert_equal "ing_live:prod-1",   acct.metadata["legacy_external_id"]
-    assert_equal ["ing_live:prod-1"], acct.metadata["legacy_uids"]
-    assert_equal "ing",               acct.metadata["legacy_bank_key"]
-    # Provider metadata still present.
     assert_equal 20, acct.metadata["ing_product_type"]
     assert_equal "ing_live:product_balance", acct.metadata["balance_source"]
   end
@@ -91,15 +87,6 @@ class IngNormalizerTest < Minitest::Test
     assert_equal "credit_card", liab.type
     assert_equal "EUR",         liab.currency
     assert_equal "cc-1",        liab.source_id
-  end
-
-  def test_credit_card_legacy_uids_prepend_ing_cc_prefix
-    payload = normalizer.call([asset_product("uuid" => "cc-1", "type" => 3)])
-    acct = payload.accounts.first
-
-    assert_equal "ing_live:cc-1", acct.metadata["legacy_external_id"]
-    assert_equal ["ing-cc-cc-1", "ing_live:cc-1"], acct.metadata["legacy_uids"]
-    assert_equal "ing_cc",        acct.metadata["legacy_bank_key"]
   end
 
   # --- transactions ------------------------------------------------------
@@ -127,13 +114,11 @@ class IngNormalizerTest < Minitest::Test
     assert_equal "pending", payload.transactions.first.status
   end
 
-  def test_transaction_legacy_compat_metadata
+  def test_transaction_carries_raw_provider_metadata
     mv = asset_movement
     payload = normalizer.call([asset_product("movements" => [mv])])
     txn = payload.transactions.first
 
-    assert_equal "ing_live:prod-1:mv-1", txn.metadata["legacy_dedup_key"]
-    # raw_payload moved to metadata["ing"].
     assert_equal "mv-1", txn.metadata["ing"]["uuid"]
   end
 

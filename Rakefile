@@ -2,9 +2,9 @@ require "rake/testtask"
 
 # One test task per provider directory (ing/test/**, unicaja/test/**, ...).
 # Running `rake test` runs them all; `rake test:ing` runs just ING's.
-# Shared-helper tests (canonical_builder, helpers, legacy_keys, legacy_keys_loader)
-# now live in the freentonic gem itself as of 0.3.0 — run them via
-# `bundle exec rake test` from that repo.
+# Shared-helper tests (canonical_builder, helpers, …) live in the
+# freentonic gem itself as of 0.3.0 — run them via `bundle exec rake
+# test` from that repo.
 provider_dirs = Dir["*/test"].map { |d| File.dirname(d) }.sort
 
 namespace :test do
