@@ -131,6 +131,78 @@ class IngNormalizerTest < Minitest::Test
     assert_nil acct.metadata["balance_source"]
   end
 
+  def test_credit_cards_on_same_line_collapse_into_one_account
+    # ING issues a separate `product` per plastic but the balance is
+    # shared across every plastic on the same revolving credit line.
+    # Two plastics with the same associatedAccount.uuid + creditLimit
+    # must merge into ONE canonical account (and their movements roll
+    # up onto that account) — otherwise the same debt gets counted
+    # once per plastic in downstream consumers.
+    plastic_1 = credit_card_product(
+      "uuid" => "plastic-1", "alias" => "Visa Primary",
+      "associatedAccount" => { "uuid" => "line-A", "productNumber" => "ES00..." },
+      "movements" => [asset_movement("uuid" => "mv-from-plastic-1")]
+    )
+    plastic_2 = credit_card_product(
+      "uuid" => "plastic-2", "alias" => "Visa Belen",
+      "associatedAccount" => { "uuid" => "line-A", "productNumber" => "ES00..." },
+      "movements" => [asset_movement("uuid" => "mv-from-plastic-2", "amount" => -5.0)]
+    )
+
+    payload = normalizer.call([plastic_1, plastic_2])
+
+    assert_equal 1, payload.accounts.size,    "shared-line plastics must collapse"
+    assert_equal 2, payload.transactions.size, "movements from every plastic roll up"
+
+    acct = payload.accounts.first
+    assert_equal "credit_card",            acct.type
+    assert_equal BigDecimal("-2182.81"),   acct.balance.current
+    assert_equal 2, acct.metadata["ing_merged_plastics"].size
+    assert_equal %w[plastic-1 plastic-2],
+                 acct.metadata["ing_merged_plastics"].map { |p| p["uuid"] }.sort
+  end
+
+  def test_distinct_credit_lines_stay_separate
+    line_a = credit_card_product(
+      "uuid" => "p1", "creditLimit" => 6500.0, "availableBalance" => 4317.19,
+      "associatedAccount" => { "uuid" => "line-A" }
+    )
+    line_b = credit_card_product(
+      "uuid" => "p2", "creditLimit" => 1485.0, "availableBalance" => 1485.0,
+      "associatedAccount" => { "uuid" => "line-B" }
+    )
+    payload = normalizer.call([line_a, line_b])
+
+    assert_equal 2, payload.accounts.size
+    balances = payload.accounts.map { |a| a.balance.current }.sort
+    assert_equal [BigDecimal("-2182.81"), BigDecimal("0")], balances
+  end
+
+  def test_card_without_associated_account_emits_individually
+    # Defensive: if ING ever omits associatedAccount, fall back to
+    # one canonical account per plastic rather than collapsing all
+    # under a single bucket.
+    p1 = credit_card_product("uuid" => "lonely-1", "associatedAccount" => nil)
+    p2 = credit_card_product("uuid" => "lonely-2", "associatedAccount" => nil)
+    payload = normalizer.call([p1, p2])
+    assert_equal 2, payload.accounts.size
+  end
+
+  def test_merged_account_id_stable_across_plastic_changes
+    # When ING re-issues a plastic on the same line, its uuid changes
+    # but the line uuid stays. The canonical account id must stay too
+    # so downstream account history doesn't fragment.
+    initial = normalizer.call([
+      credit_card_product("uuid" => "old-plastic",
+                          "associatedAccount" => { "uuid" => "line-A" })
+    ])
+    after_reissue = normalizer.call([
+      credit_card_product("uuid" => "new-plastic",
+                          "associatedAccount" => { "uuid" => "line-A" })
+    ])
+    assert_equal initial.accounts.first.id, after_reissue.accounts.first.id
+  end
+
   # --- transactions ------------------------------------------------------
 
   def test_transaction_canonical_fields
