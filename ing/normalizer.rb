@@ -47,10 +47,7 @@ module Freentonic
         def build_account(product, kind)
           uuid = product["uuid"]
           iban = product["iban"].to_s.gsub(/\s/, "")
-          balance_cents =
-            if product["balance"].is_a?(Numeric)
-              (product["balance"].to_f * 100).round
-            end
+          balance_cents, balance_source = extract_balance(product, kind)
 
           Builder.build_account(
             institution: INSTITUTION,
@@ -63,9 +60,36 @@ module Freentonic
             metadata: {
               "ing_product_type"   => product["type"],
               "ing_product_number" => product["productNumber"],
-              "balance_source"     => balance_cents ? "ing_live:product_balance" : nil
+              "balance_source"     => balance_source
             }
           )
+        end
+
+        # Asset products carry a top-level numeric `balance` (the cleared
+        # account balance). Credit-card products don't — ING's
+        # /products payload exposes `creditLimit` and `availableBalance`
+        # for each card, and the outstanding amount is the difference.
+        # We store outstanding as a NEGATIVE number so it slots into
+        # SimpleFIN/canonical's liability convention ("you owe this
+        # much"). Pending authorisations and aggregate fields like
+        # `spentAmount` look promising but in real ING data those are
+        # cardholder-wide rather than per-card — using them would
+        # double-count debt across cards on a shared credit line.
+        def extract_balance(product, kind)
+          if kind == "liability"
+            limit     = product["creditLimit"]
+            available = product["availableBalance"]
+            if limit.is_a?(Numeric) && available.is_a?(Numeric)
+              outstanding_cents = ((limit.to_f - available.to_f) * 100).round
+              [-outstanding_cents, "ing_live:credit_limit_minus_available"]
+            else
+              [nil, nil]
+            end
+          elsif product["balance"].is_a?(Numeric)
+            [(product["balance"].to_f * 100).round, "ing_live:product_balance"]
+          else
+            [nil, nil]
+          end
         end
 
         def build_liability(product, account)

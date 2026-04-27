@@ -72,8 +72,22 @@ class IngNormalizerTest < Minitest::Test
 
   # --- liability (credit card) ------------------------------------------
 
+  def credit_card_product(overrides = {})
+    {
+      "uuid"             => "cc-1",
+      "type"             => 3,
+      "alias"            => "Visa",
+      "name"             => "Tarjeta Crédito",
+      "productNumber"    => "4174804472951018",
+      "currency"         => "EUR",
+      "creditLimit"      => 6500.0,
+      "availableBalance" => 4317.19,
+      "movements"        => []
+    }.merge(overrides)
+  end
+
   def test_credit_card_emits_account_plus_liability
-    payload = normalizer.call([asset_product("uuid" => "cc-1", "type" => 3, "alias" => "Visa")])
+    payload = normalizer.call([credit_card_product("uuid" => "cc-1", "alias" => "Visa")])
     assert_equal 1, payload.accounts.size
     assert_equal 1, payload.liabilities.size
 
@@ -87,6 +101,34 @@ class IngNormalizerTest < Minitest::Test
     assert_equal "credit_card", liab.type
     assert_equal "EUR",         liab.currency
     assert_equal "cc-1",        liab.source_id
+  end
+
+  def test_credit_card_balance_is_outstanding_negated
+    # creditLimit 6500 - availableBalance 4317.19 = 2182.81 outstanding,
+    # stored as a negative number (it's a liability — money owed).
+    payload = normalizer.call([credit_card_product])
+    acct = payload.accounts.first
+    assert_equal BigDecimal("-2182.81"), acct.balance.current
+    assert_equal "ing_live:credit_limit_minus_available", acct.metadata["balance_source"]
+  end
+
+  def test_credit_card_with_no_outstanding_is_zero
+    payload = normalizer.call([credit_card_product("creditLimit" => 1485.0,
+                                                   "availableBalance" => 1485.0)])
+    acct = payload.accounts.first
+    assert_equal BigDecimal("0"), acct.balance.current
+    assert_equal "ing_live:credit_limit_minus_available", acct.metadata["balance_source"]
+  end
+
+  def test_credit_card_without_limit_or_available_has_nil_balance
+    # Defensive: if ING ever changes the shape and stops emitting either
+    # field, surface that as missing (the canonical reshape will then
+    # report it in errors[]) rather than silently emitting 0.
+    payload = normalizer.call([credit_card_product("creditLimit" => nil,
+                                                   "availableBalance" => nil)])
+    acct = payload.accounts.first
+    assert_nil acct.balance.current
+    assert_nil acct.metadata["balance_source"]
   end
 
   # --- transactions ------------------------------------------------------
