@@ -47,19 +47,28 @@ module Freentonic
           return nil unless pocket_id
 
           currency = pocket["currency"] || "EUR"
+          parent_iban = find_iban(pocket, bank_details)
+          # Revolut pockets are virtual sub-accounts of the user's main
+          # wallet — every EUR pocket shares the same IBAN. Surfacing
+          # that IBAN at the canonical Account level makes
+          # Canonical.account_id collide across pockets (its ref priority
+          # picks IBAN over source_id), collapsing every EUR pocket onto
+          # one canonical id and clobbering balances downstream. Keep the
+          # parent IBAN in metadata only; let source_id drive the id.
           Builder.build_account(
             institution: INSTITUTION,
             source_id:   "pocket:#{pocket_id}",
             currency:    currency,
             name:        pocket["name"] || "Revolut #{currency}",
             type:        "checking",
-            iban:        find_iban(pocket, bank_details),
+            iban:        nil,
             balance:     { current: Builder.cents_to_amount(cents(pocket["balance"], already_minor: true)), timestamp: nil },
             metadata: {
-              "revolut_pocket_id" => pocket_id,
-              "revolut_type"      => pocket["type"],
-              "balance_source"    => "revolut_live:wallet"
-            }
+              "revolut_pocket_id"   => pocket_id,
+              "revolut_type"        => pocket["type"],
+              "revolut_parent_iban" => parent_iban,
+              "balance_source"      => "revolut_live:wallet"
+            }.compact
           )
         end
 

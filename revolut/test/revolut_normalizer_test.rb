@@ -69,8 +69,43 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal "revolut",            acct.institution
     assert_equal "checking",           acct.type
     assert_equal "pocket:pocket-eur-1", acct.source_id
-    assert_equal "LT00 1234 5678 9012 3456", acct.iban
+    # Revolut pockets share the parent wallet's IBAN, so we don't
+    # surface it on Account#iban (would collide canonical ids across
+    # pockets). It's preserved in metadata for traceability.
+    assert_nil acct.iban
+    assert_equal "LT00 1234 5678 9012 3456", acct.metadata["revolut_parent_iban"]
     assert_equal BigDecimal("1234.56"), acct.balance.current
+  end
+
+  def test_multiple_pockets_with_same_currency_get_distinct_canonical_ids
+    # Real-world Revolut: a user has a main "Revolut EUR" pocket plus
+    # named sub-pockets ("Experimento 1", money market funds, …). All
+    # share the same EUR IBAN but each has its own pocket id and
+    # balance. Canonical ids must be distinct so SimpleFIN consumers
+    # don't dedupe them and clobber the main pocket's balance.
+    raw = {
+      "wallet"  => {},
+      "pockets" => [
+        { "id" => "p-main",  "currency" => "EUR", "balance" => 22_437,
+          "name" => "Revolut EUR" },
+        { "id" => "p-saved", "currency" => "EUR", "balance" => 0,
+          "name" => "Experimento 1" },
+        { "id" => "p-mmf",   "currency" => "EUR", "balance" => 0,
+          "name" => "MMF:aff2f52c-1f4c-40f2-a601-07fe17ec0bd2" }
+      ],
+      "bank_details" => [
+        { "currency" => "EUR", "details" => { "accounts" => [{ "iban" => "LT00 1234 5678 9012 3456" }] } }
+      ],
+      "vaults" => []
+    }
+    payload = normalizer.call(raw)
+
+    ids = payload.accounts.map(&:id)
+    assert_equal 3, ids.size
+    assert_equal ids.size, ids.uniq.size, "every pocket must get a distinct canonical id"
+
+    main = payload.accounts.find { |a| a.source_id == "pocket:p-main" }
+    assert_equal BigDecimal("224.37"), main.balance.current
   end
 
   def test_pocket_transactions
