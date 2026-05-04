@@ -179,6 +179,57 @@ class UnicajaNormalizerTest < Minitest::Test
     assert_equal a.transactions.first.id, b.transactions.first.id
   end
 
+  def test_account_id_collides_with_fintonic_for_same_physical_account
+    raw = { "cuentas" => [cuenta("iban" => "ES5921030001234567891272")] }
+    acct = normalizer.call(raw).accounts.first
+    fintonic_id = Freentonic::Canonical.account_id(
+      institution: "fintonic", portable_ref: "2103:1272"
+    )
+    assert_equal fintonic_id, acct.id
+    assert_equal "bank:2103:1272", acct.portable_id
+  end
+
+  def test_account_without_iban_falls_back_to_legacy_derivation
+    raw = { "cuentas" => [cuenta("iban" => nil, "IBAN" => nil)] }
+    acct = normalizer.call(raw).accounts.first
+    legacy = Freentonic::Canonical.account_id(
+      institution: "unicaja", source_id: "cuenta:C-001"
+    )
+    assert_equal legacy, acct.id
+    assert_nil acct.portable_id
+  end
+
+  def test_credit_card_id_collides_with_fintonic_creditcard_via_pan_last4
+    raw = { "tarjetas" => [tarjeta("numtarjeta" => "5540 29** **** 8619")] }
+    acct = normalizer.call(raw).accounts.first
+    fintonic_id = Freentonic::Canonical.account_id(
+      institution: "fintonic", portable_ref: "2103:8619"
+    )
+    assert_equal fintonic_id, acct.id
+    assert_equal "card:2103:8619", acct.portable_id
+  end
+
+  def test_credit_card_without_pan_falls_back_to_legacy_derivation
+    raw = { "tarjetas" => [tarjeta("numtarjeta" => nil)] }
+    acct = normalizer.call(raw).accounts.first
+    legacy = Freentonic::Canonical.account_id(
+      institution: "unicaja", source_id: "tarjeta:T-001"
+    )
+    assert_equal legacy, acct.id
+    assert_nil acct.portable_id
+  end
+
+  def test_same_day_duplicate_movements_get_distinct_ids
+    movs = [
+      movement("numMovimiento" => "M-A", "concepto" => "KEPLER"),
+      movement("numMovimiento" => "M-B", "concepto" => "KEPLER")
+    ]
+    raw = { "cuentas" => [cuenta], "cuenta_movements" => { "C-001" => movs } }
+    txs = normalizer.call(raw).transactions
+    assert_equal 2, txs.size
+    refute_equal txs[0].id, txs[1].id
+  end
+
   def test_wire_format_no_cents_keys
     raw = {
       "cuentas"   => [cuenta],

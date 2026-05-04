@@ -54,10 +54,14 @@ module Freentonic
 
         # --- Cuenta (checking) ------------------------------------------------
 
+        UNICAJA_BANK_CODE = "2103"
+
         def build_cuenta(c)
           ppp = ppp_for(c)
           return nil unless ppp
           balance_cents = extract_balance_cents(c)
+          iban = c["iban"] || c["IBAN"]
+          portable_ref, portable_id = account_portable_keys(iban)
 
           Builder.build_account(
             institution: INSTITUTION,
@@ -65,7 +69,9 @@ module Freentonic
             currency:    c["divisa"] || c["moneda"] || "EUR",
             name:        first_present(c["alias"], c["descripcion"], "Unicaja #{ppp}"),
             type:        "checking",
-            iban:        c["iban"] || c["IBAN"],
+            iban:        iban,
+            portable_ref: portable_ref,
+            portable_id:  portable_id,
             balance: {
               current:   Builder.cents_to_amount(balance_cents),
               timestamp: nil
@@ -78,12 +84,26 @@ module Freentonic
           )
         end
 
+        def account_portable_keys(iban)
+          return [nil, nil] unless iban && iban.length >= 18 && iban.start_with?("ES")
+          ref = "#{UNICAJA_BANK_CODE}:#{iban[-4, 4]}"
+          [ref, "bank:#{ref}"]
+        end
+
+        def card_portable_keys(t)
+          last4 = pan_last4(t["numtarjeta"] || t["numeroTarjeta"])
+          return [nil, nil] unless last4
+          ref = "#{UNICAJA_BANK_CODE}:#{last4}"
+          [ref, "card:#{ref}"]
+        end
+
         # --- Tarjeta (credit card) -------------------------------------------
 
         def build_tarjeta(t)
           ppp = ppp_for(t)
           return nil unless ppp
           balance_cents = extract_card_balance_cents(t)
+          portable_ref, portable_id = card_portable_keys(t)
 
           Builder.build_account(
             institution: INSTITUTION,
@@ -92,6 +112,8 @@ module Freentonic
             name:        first_present(t["alias"], t["tipotarjeta"], "Unicaja card #{ppp}", t["descripcion"]),
             type:        "credit_card",
             iban:        nil,
+            portable_ref: portable_ref,
+            portable_id:  portable_id,
             balance: {
               current:   Builder.cents_to_amount(balance_cents),
               timestamp: nil
