@@ -86,6 +86,28 @@ phases:
       host: "ing.ingdirect.es"
       path: "/genoma_api/rest/"
       as: cookie
+    # Best-effort: snapshot the bank's frontend state alongside the
+    # cookie so the api_client can later thread JS-computed auth headers
+    # (Authorization Bearer, X-XSRF-TOKEN, X-ING-ExtendedSessionContext)
+    # without trying to mint them from outside the browser. Required:
+    # false because routine post-login state varies — when the
+    # dashboard hasn't fired /position-keeping by the time this phase
+    # runs, the captures are simply absent and the extractor stays on
+    # the legacy path.
+    - action: capture_local_storage
+      origin: "https://ing.ingdirect.es"
+      as: ing_local_storage
+      required: false
+    - action: capture_outbound_request_headers
+      host: "api.ing.ingdirect.es"
+      path: "/position-keeping"
+      headers:
+        - "Authorization"
+        - "X-XSRF-TOKEN"
+        - "X-ING-ExtendedSessionContext"
+      as: ing_api_headers
+      most_recent: true
+      required: false
 
 credentials:
   require:
@@ -98,11 +120,19 @@ credentials:
     - from: cookie
       as: cookie
       log_extra: "{cookie_cookie_count} cookies"
+    - from: ing_local_storage
+      as: ing_local_storage
+      log: false
+    - from: ing_api_headers
+      as: ing_api_headers
+      log: false
 
 api_client:
   base_url: "https://ing.ingdirect.es"
   credentials:
     - cookie
+    - ing_local_storage
+    - ing_api_headers
   batch_keys:
     - transactions
     - movements
