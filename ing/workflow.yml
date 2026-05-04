@@ -2,7 +2,11 @@ version: 1
 
 config:
   key: ing
-  default_lookback_days: 90
+  # Default targets routine "what's new since last week" syncs. Lookbacks
+  # >60 days trip ING's PSD2 SCA gating on checking accounts; the
+  # extractor opens an operator prompt + runs the v2-endpoint elevation
+  # dance for those, so default to a window that doesn't prompt.
+  default_lookback_days: 30
 
 secrets:
   USER_DNI:
