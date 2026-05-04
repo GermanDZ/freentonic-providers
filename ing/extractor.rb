@@ -1,18 +1,30 @@
 # frozen_string_literal: true
 
-# ING extractor: fetches products (accounts + cards) via the legacy
-# genoma_api endpoint, then per-product movements. The resulting raw
-# payload is an Array of product hashes, each with a "movements" key
-# holding the raw movement list returned by the API.
+# ING extractor.
 #
-# When ING short-pages a checking-account's movements (PSD2 SCA-gated
-# older history), and a remote_prompt_store is available, the extractor
-# attempts a single SCA elevation handshake mid-extraction (operator
-# approves a push notification on their mobile app) and re-fetches the
-# truncated products. Without a prompt store (headless / scheduled
-# runs), or on any SCA failure, the truncation is recorded as a
-# breadcrumb on the product and surfaced to the canonical envelope so
-# downstream tooling can flag the run.
+# Two execution paths gated on lookback_days + captured auth state:
+#
+# - Lookback ≤ 60 days, OR no captured api headers, OR no operator
+#   prompt store: legacy genoma_api endpoints with cookie-only auth.
+#   Recent movements come back; SCA-gated older history truncates and
+#   gets a stamped breadcrumb.
+#
+# - Lookback > 60 days + ing_api_headers captured + prompt store:
+#   v2 elevated path. Install the captured Authorization Bearer +
+#   X-ING-ExtendedSessionContext on the client (these are JS-computed
+#   values the bank's frontend put on its outbound /position-keeping
+#   call, captured by the workflow's capture_outbound_request_headers
+#   step). Call /position-keeping ourselves to get the V1ID→raw-UUID
+#   map. Run the PSD2 SCA handshake (operator approves a push
+#   notification on their phone). Refresh the Bearer via /saf/tpa/
+#   accesstoken/synchronize so the new value carries the elevated
+#   level-of-assurance. Fetch each asset product's transactions via
+#   the v2 endpoint with the elevated headers. Credit cards stay on
+#   the legacy endpoint — their /position-keeping entries don't carry
+#   the v2 UUID anyway, and ING's own SPA does the same dispatch.
+#
+# Any failure in the elevated path falls back cleanly to the legacy
+# path with the partial-data breadcrumb. SCA never breaks the run.
 
 require "freentonic"
 
@@ -23,82 +35,187 @@ module Freentonic
         provider!(__dir__)
         # KIND_BY_PRODUCT_TYPE auto-defined from ing/config.yml.
 
-        # An asset product is "probably truncated" when more than
-        # PARTIAL_DATA_MIN_MOVEMENTS came back but the earliest of them
-        # is more than PARTIAL_DATA_GAP_DAYS days later than from_date.
-        # The count guard suppresses false positives on young or dormant
-        # accounts where the gap is legitimate.
+        # Lookback threshold above which we run the v2 elevated path.
+        # ING's checking-account /transactions endpoint silently caps at
+        # ~52 days without elevation; 60 leaves a small buffer.
+        SCA_ELEVATION_LOOKBACK_DAYS = 60
+
+        # Partial-data heuristic — defense-in-depth for the legacy path.
+        # Suppresses false positives on young/dormant accounts.
         PARTIAL_DATA_MIN_MOVEMENTS = 10
         PARTIAL_DATA_GAP_DAYS      = 30
 
-        # SCA prompt timeout. Push approval typically takes <30s; 3min
-        # gives the operator time to find their phone and unlock it.
+        # Operator gets ~3 minutes to find their phone and approve.
         SCA_PROMPT_TIMEOUT_SECONDS = 180
+
+        # v2 transactions pagination — limit per page; offset advances by
+        # the response's `count`.
+        V2_PAGE_LIMIT = 100
+
+        ING_API_HOST    = "https://api.ing.ingdirect.es"
+        ING_LEGACY_HOST = "https://ing.ingdirect.es"
 
         def call(client:, credentials:, from_date:, stdout:, stderr:,
                  remote_prompt_store: nil, run_dir: nil)
-          products = client.fetch_products_legacy_shape
-          stdout.puts "  Products found: #{products.size}"
+          lookback_days = (Date.today - from_date).to_i
+          api_headers   = credentials[:ing_api_headers].is_a?(Hash) ? credentials[:ing_api_headers] : {}
 
-          # First pass: fetch movements for every processable product.
-          processable = products.select { |p| processable?(p, stdout) }
-          processable.each { |product| fetch_movements_into(product, client, from_date, stdout, stderr) }
-
-          # If any asset product looks truncated and we have a prompt
-          # store wired up (i.e. running under simplefreen-invoke with an
-          # operator watching), attempt SCA elevation once and re-fetch
-          # the truncated ones. Headless runs and SCA failures fall
-          # through to the partial-data breadcrumb path.
-          truncated = processable.select { |p| partial_data_suspected?(p, from_date) }
-          if truncated.any? && remote_prompt_store
-            stdout.puts "  #{truncated.size} product(s) appear truncated; attempting SCA elevation..."
-            if attempt_sca_elevation(client, remote_prompt_store, stdout, stderr)
-              stdout.puts "  Re-fetching truncated product(s) with elevated session..."
-              pre_refetch_earliest = truncated.map { |p| earliest_movement_date(p) }
-              truncated.each { |product| fetch_movements_into(product, client, from_date, stdout, stderr) }
-              warn_if_refetch_was_ineffective(truncated, pre_refetch_earliest, stderr)
-            end
+          if lookback_days > SCA_ELEVATION_LOOKBACK_DAYS &&
+             !api_headers["Authorization"].to_s.empty? &&
+             remote_prompt_store
+            stdout.puts "  Lookback #{lookback_days} days > #{SCA_ELEVATION_LOOKBACK_DAYS}; " \
+                        "running v2 elevated path."
+            elevated = run_v2_elevated_path(client, api_headers, from_date,
+                                             stdout, stderr, remote_prompt_store)
+            return elevated if elevated
+            stdout.puts "  v2 elevated path didn't complete; falling back to legacy fetch."
+          elsif lookback_days > SCA_ELEVATION_LOOKBACK_DAYS && api_headers["Authorization"].to_s.empty?
+            stderr.puts "  ⚠ Lookback #{lookback_days} days > #{SCA_ELEVATION_LOOKBACK_DAYS} but " \
+                        "ing_api_headers.Authorization wasn't captured. The dashboard's " \
+                        "/position-keeping call must complete before capture_credentials runs " \
+                        "for the v2 path to be available. Running legacy fetch (older history " \
+                        "for SCA-gated checking accounts will be truncated)."
+          elsif lookback_days > SCA_ELEVATION_LOOKBACK_DAYS
+            stderr.puts "  ⚠ Lookback #{lookback_days} days > #{SCA_ELEVATION_LOOKBACK_DAYS} but " \
+                        "no operator prompt store available; running legacy fetch."
           end
 
-          # Final pass: stamp the breadcrumb on whatever still looks
-          # truncated. Re-fetch after elevation may have closed the gap;
-          # if not, downstream tooling should know.
-          processable.each { |product| flag_partial_data_if_truncated(product, from_date, stderr) }
-
-          products
+          run_legacy_path(client, from_date, stdout, stderr,
+                          flag_truncation: lookback_days > SCA_ELEVATION_LOOKBACK_DAYS)
         end
 
         private
 
-        def processable?(product, stdout)
-          type_id = product["type"].to_i
-          if KIND_BY_PRODUCT_TYPE[type_id].nil?
-            stdout.puts "  Skipping product type #{type_id} (#{first_present(product['alias'], product['name'])})"
-            return false
+        # ---------------------------------------------------------------
+        # Legacy path — cookie-only auth, /genoma_api/rest/products/*/movements.
+        # ---------------------------------------------------------------
+
+        def run_legacy_path(client, from_date, stdout, stderr, flag_truncation:)
+          products = client.fetch_products_legacy_shape
+          stdout.puts "  Products found: #{products.size}"
+
+          products.each do |product|
+            next unless processable?(product, stdout)
+            fetch_legacy_movements_into(product, client, from_date, stdout, stderr)
+            flag_partial_data_if_truncated(product, from_date, stderr) if flag_truncation
           end
-          true
+
+          products
         end
 
-        def fetch_movements_into(product, client, from_date, stdout, stderr)
-          uuid = product["uuid"]
-          kind = KIND_BY_PRODUCT_TYPE[product["type"].to_i]
-          stdout.puts "  Fetching movements for #{first_present(product['alias'], product['name'])} (#{kind})..."
-          product["movements"] = safe_fetch(stderr, "movements") {
-            movements = client.legacy_fetch_all_movements(v1id: uuid, from_date: from_date)
-            stdout.puts "    → #{movements.size} movements"
-            movements
-          } || []
+        # ---------------------------------------------------------------
+        # v2 elevated path. Returns nil on any failure so the caller
+        # falls back to legacy.
+        # ---------------------------------------------------------------
+
+        def run_v2_elevated_path(client, api_headers, from_date, stdout, stderr, prompt_store)
+          install_captured_headers(client, api_headers, stdout)
+
+          position = fetch_position_keeping(client, stdout, stderr)
+          return nil unless position
+
+          return nil unless attempt_sca_elevation(client, prompt_store, stdout, stderr)
+
+          new_bearer = refresh_bearer_after_sca(client, stdout, stderr)
+          return nil unless new_bearer
+          client.update_auth_headers!("Authorization" => "Bearer #{new_bearer}")
+
+          uuid_map = build_uuid_map(position["products"])
+          products = Array(position["legacyProducts"])
+          stdout.puts "  Products found: #{products.size} (via /position-keeping)"
+
+          products.each do |product|
+            next unless processable?(product, stdout)
+            kind = KIND_BY_PRODUCT_TYPE[product["type"].to_i]
+            v2_uuid = uuid_map[product["uuid"]]
+
+            if kind == "asset" && v2_uuid
+              fetch_v2_transactions_into(product, client, v2_uuid, from_date, stdout, stderr)
+            else
+              # Credit cards (no v2 UUID) and any defensive fallback.
+              fetch_legacy_movements_into(product, client, from_date, stdout, stderr)
+            end
+          end
+
+          products
         end
 
-        # Attempt a single SCA elevation. Returns true on success, false
-        # on any failure mode — the caller falls through to truncated-
-        # data behavior. Never raises: an SCA glitch must not break the
-        # rest of the run.
+        # ---------------------------------------------------------------
+        # Captured-headers install + per-step v2 helpers.
+        # ---------------------------------------------------------------
+
+        # The api_headers Hash comes from the workflow's
+        # capture_outbound_request_headers step — its keys are spelled
+        # exactly as we requested. Authorization is the bank's frontend's
+        # current Bearer (low-LoA at this point); ESC is the persistent
+        # affluent-tier marker. Both are required by the api host's
+        # endpoints (cookie-only doesn't open them).
+        def install_captured_headers(client, api_headers, stdout)
+          stdout.puts "  Installing captured api headers..."
+          headers = {}
+          headers["Authorization"]                = api_headers["Authorization"]                if api_headers["Authorization"]
+          headers["X-ING-ExtendedSessionContext"] = api_headers["X-ING-ExtendedSessionContext"] if api_headers["X-ING-ExtendedSessionContext"]
+          headers["X-XSRF-TOKEN"]                 = api_headers["X-XSRF-TOKEN"]                 if api_headers["X-XSRF-TOKEN"]
+          client.update_auth_headers!(headers)
+        end
+
+        def fetch_position_keeping(client, stdout, stderr)
+          stdout.puts "  Fetching /position-keeping for V1ID→UUID mapping..."
+          resp = client.raw_request(
+            method: :get,
+            path:   "/position-keeping",
+            base:   ING_API_HOST
+          )
+          unless resp.is_a?(Hash) && resp["legacyProducts"].is_a?(Array)
+            stderr.puts "    ✗ /position-keeping: missing legacyProducts array"
+            return nil
+          end
+          resp
+        rescue StandardError => e
+          stderr.puts "    ✗ /position-keeping failed: #{e.class}: #{e.message}"
+          nil
+        end
+
+        def refresh_bearer_after_sca(client, stdout, stderr)
+          stdout.puts "  Refreshing Bearer after SCA elevation..."
+          resp = client.raw_request(
+            method: :get,
+            path:   "/saf/tpa/accesstoken/synchronize",
+            base:   ING_API_HOST
+          )
+          token = resp.dig("accessTokens", 0, "accessToken")
+          if token.to_s.empty?
+            stderr.puts "    ✗ Bearer refresh: response missing accessTokens[0].accessToken"
+            return nil
+          end
+          token
+        rescue StandardError => e
+          stderr.puts "    ✗ Bearer refresh failed: #{e.class}: #{e.message}"
+          nil
+        end
+
+        # Walk position-keeping's modern products array, building
+        # V1ID(LOCAL_UUID) → raw UUID. Skips products without a populated
+        # UUID (credit cards have LOCAL_UUID only).
+        def build_uuid_map(modern_products)
+          map = {}
+          Array(modern_products).each do |p|
+            ids = Array(p["identifiers"])
+            local = ids.find { |i| i["type"] == "LOCAL_UUID" }&.dig("value")
+            uuid  = ids.find { |i| i["type"] == "UUID" }&.dig("value")
+            map[local] = uuid if local && uuid && !uuid.to_s.empty?
+          end
+          map
+        end
+
+        # Initiate the SCA challenge, prompt the operator, commit on
+        # approval. Cookie + bearer auth on the genoma host.
         def attempt_sca_elevation(client, prompt_store, stdout, stderr)
           doc = client.raw_request(
             method:  :get,
             path:    "/genoma_api/rest/sca/documentation",
-            headers: { "x-ing-reset-validations" => "1" }
+            headers: { "x-ing-reset-validations" => "1" },
+            base:    ING_LEGACY_HOST
           )
 
           acceptance = Array(doc["acceptanceMethods"]).first
@@ -122,7 +239,7 @@ module Freentonic
             )
           rescue Freentonic::RemotePromptStore::Timeout
             stderr.puts "    ✗ SCA elevation: operator did not approve within " \
-                        "#{SCA_PROMPT_TIMEOUT_SECONDS}s; continuing with truncated data"
+                        "#{SCA_PROMPT_TIMEOUT_SECONDS}s; falling back to legacy"
             return false
           end
 
@@ -130,14 +247,14 @@ module Freentonic
             method:  :put,
             path:    "/genoma_api/rest/sca/documentation",
             headers: { "x-ing-securityprocessid" => process_id },
-            body:    { "processId" => process_id }
+            body:    { "processId" => process_id },
+            base:    ING_LEGACY_HOST
           )
 
           stdout.puts "    ✓ SCA elevation succeeded"
           true
         rescue StandardError => e
-          stderr.puts "    ✗ SCA elevation failed: #{e.class}: #{e.message}; " \
-                      "continuing with truncated data"
+          stderr.puts "    ✗ SCA elevation failed: #{e.class}: #{e.message}"
           false
         end
 
@@ -151,33 +268,116 @@ module Freentonic
           "#{base} (challenge: #{code})"
         end
 
-        def partial_data_suspected?(product, from_date)
+        # ---------------------------------------------------------------
+        # Legacy /movements fetch — unchanged from pre-SCA behavior.
+        # ---------------------------------------------------------------
+
+        def fetch_legacy_movements_into(product, client, from_date, stdout, stderr)
+          uuid = product["uuid"]
           kind = KIND_BY_PRODUCT_TYPE[product["type"].to_i]
-          return false unless kind == "asset"
-          movements = Array(product["movements"])
-          return false if movements.size < PARTIAL_DATA_MIN_MOVEMENTS
-          earliest = movements.map { |mv| movement_date(mv) }.compact.min
-          return false unless earliest
-          (earliest - from_date).to_i > PARTIAL_DATA_GAP_DAYS
+          stdout.puts "  Fetching movements (legacy) for #{first_present(product['alias'], product['name'])} (#{kind})..."
+          product["movements"] = safe_fetch(stderr, "movements") {
+            movements = client.legacy_fetch_all_movements(v1id: uuid, from_date: from_date)
+            stdout.puts "    → #{movements.size} movements"
+            movements
+          } || []
+        end
+
+        # ---------------------------------------------------------------
+        # v2 transactions fetch — paginate via response.count, stop when
+        # mayHasMoreElements is false or count is 0. Coerce each page's
+        # transactions to legacy /movements shape so the normalizer
+        # doesn't need to know which path produced them.
+        # ---------------------------------------------------------------
+
+        def fetch_v2_transactions_into(product, client, raw_uuid, from_date, stdout, stderr)
+          stdout.puts "  Fetching transactions (v2) for #{first_present(product['alias'], product['name'])}..."
+          all = []
+          offset = 0
+          to_date = Date.today
+          loop do
+            resp = safe_fetch(stderr, "v2 transactions") {
+              client.raw_request(
+                method: :get,
+                path:   "/v2/products/#{raw_uuid}/transactions",
+                base:   ING_API_HOST,
+                params: {
+                  limit:     V2_PAGE_LIMIT,
+                  offset:    offset,
+                  fromDate:  from_date.iso8601,
+                  toDate:    to_date.iso8601,
+                  filterEru: false
+                }
+              )
+            }
+            break unless resp.is_a?(Hash)
+            page = Array(resp["transactions"])
+            all.concat(page.map { |t| coerce_v2_transaction_to_legacy_shape(t) })
+            count = resp["count"].to_i
+            break if count == 0
+            offset += count
+            break unless resp["mayHasMoreElements"]
+          end
+          stdout.puts "    → #{all.size} transactions"
+          product["movements"] = all
+        end
+
+        # Translate v2 → legacy /movements field names so the normalizer
+        # doesn't need to dispatch on shape. v2-only fields land under
+        # _v2_* keys for downstream debugging.
+        def coerce_v2_transaction_to_legacy_shape(tx)
+          {
+            "uuid"          => tx["transactionLocalUUID"],
+            "amount"        => tx["amount"],
+            "effectiveDate" => yyyy_mm_dd_to_dd_mm_yyyy(tx["transactionDate"]),
+            "description"   => tx["description"],
+            "currency"      => "EUR",
+            "tranCode"      => tx["transactionCode"],
+            "store"         => tx["concept"],
+            "_v2_source"              => true,
+            "_v2_subcategoryId"       => tx["subcategoryId"],
+            "_v2_issuerId"            => tx["issuerId"],
+            "_v2_excludedAmount"      => tx["excludedAmount"],
+            "_v2_balance"             => tx["balance"],
+            "_v2_transactionSequence" => tx.dig("transactionId", "transactionSequence")
+          }
+        end
+
+        def yyyy_mm_dd_to_dd_mm_yyyy(s)
+          return nil unless s.is_a?(String) && s =~ /\A\d{4}-\d{2}-\d{2}\z/
+          y, m, d = s.split("-")
+          "#{d}/#{m}/#{y}"
+        end
+
+        # ---------------------------------------------------------------
+        # Shared utilities.
+        # ---------------------------------------------------------------
+
+        def processable?(product, stdout)
+          type_id = product["type"].to_i
+          if KIND_BY_PRODUCT_TYPE[type_id].nil?
+            stdout.puts "  Skipping product type #{type_id} (#{first_present(product['alias'], product['name'])})"
+            return false
+          end
+          true
         end
 
         def flag_partial_data_if_truncated(product, from_date, stderr)
-          return unless partial_data_suspected?(product, from_date)
-          # If a previous run of flag_… already stamped the same
-          # breadcrumb (re-fetch did not close the gap), don't double-log
-          # the warning to stderr. The breadcrumb itself stays.
+          kind = KIND_BY_PRODUCT_TYPE[product["type"].to_i]
+          return unless kind == "asset"
           movements = Array(product["movements"])
+          return if movements.size < PARTIAL_DATA_MIN_MOVEMENTS
+
           earliest = movements.map { |mv| movement_date(mv) }.compact.min
+          return unless earliest
           gap_days = (earliest - from_date).to_i
-          previous = product["_partial_data_suspected"]
+          return if gap_days <= PARTIAL_DATA_GAP_DAYS
 
           name = first_present(product["alias"], product["name"]) || "ING product"
-          unless previous && previous["earliest_returned"] == earliest.iso8601
-            stderr.puts "    ⚠ partial-data suspected for #{name}: earliest movement " \
-                        "#{earliest.iso8601}, requested from #{from_date.iso8601} " \
-                        "(#{gap_days}-day gap). ING gates older checking-account " \
-                        "history behind PSD2 SCA elevation."
-          end
+          stderr.puts "    ⚠ partial-data suspected for #{name}: earliest movement " \
+                      "#{earliest.iso8601}, requested from #{from_date.iso8601} " \
+                      "(#{gap_days}-day gap). ING gates older checking-account " \
+                      "history behind PSD2 SCA elevation."
           product["_partial_data_suspected"] = {
             "from_date_requested" => from_date.iso8601,
             "earliest_returned"   => earliest.iso8601,
@@ -185,37 +385,6 @@ module Freentonic
             "movement_count"      => movements.size,
             "reason"              => "sca_elevation_required_suspected"
           }
-        end
-
-        def earliest_movement_date(product)
-          Array(product["movements"]).map { |mv| movement_date(mv) }.compact.min
-        end
-
-        # When the post-SCA re-fetch comes back with the same earliest
-        # movement as before, the elevation we just performed didn't
-        # actually unlock older history on the endpoint we hit. The most
-        # likely cause is a host/endpoint mismatch: the SCA we drove
-        # elevates the v2 transactions endpoint (api.ing.ingdirect.es)
-        # but legacy_fetch_all_movements hits the legacy /movements
-        # endpoint on ing.ingdirect.es which is governed by different
-        # rules (probably needs a Bearer minted via accesstoken/
-        # synchronize after the SCA PUT commit). Surface this hypothesis
-        # explicitly so the next operator sees it without having to
-        # diff stderr against the source.
-        def warn_if_refetch_was_ineffective(truncated, pre_refetch_earliest, stderr)
-          truncated.zip(pre_refetch_earliest).each do |product, before|
-            after = earliest_movement_date(product)
-            next if before.nil? || after.nil?
-            next if after < before  # re-fetch went further back; elevation worked
-            name = first_present(product["alias"], product["name"]) || "ING product"
-            stderr.puts "    ⚠ SCA elevation succeeded but #{name} re-fetch did not " \
-                        "return older history (earliest still #{after.iso8601}). The " \
-                        "legacy /genoma_api/rest/products/{uuid}/movements endpoint " \
-                        "may not honor the elevation we performed; migrating this " \
-                        "fetch path to api.ing.ingdirect.es/v2/products/{uuid}/" \
-                        "transactions with a Bearer minted via accesstoken/synchronize " \
-                        "is the next step."
-          end
         end
 
         def movement_date(mv)
