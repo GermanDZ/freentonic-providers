@@ -215,6 +215,33 @@ class IngExtractorTest < Minitest::Test
     refute products.first.key?("_partial_data_suspected")
   end
 
+  def test_sca_elevation_ineffective_refetch_warns_explicitly
+    # Real-world failure mode: SCA flow runs to completion, prompt is
+    # approved, PUT commits, but the re-fetch comes back with the same
+    # window as before — meaning the elevation didn't apply to the
+    # legacy endpoint we're hitting. Stderr should name the hypothesis
+    # so operators don't have to diff against source.
+    client = StubClient.new
+    client.products = [asset_product]
+    same_window = movements(count: 50, latest_date: Date.today)
+    client.movements_by_uuid["p-1"] = [same_window, same_window.dup]
+    client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
+    prompt = StubPromptStore.new
+
+    stderr = StringIO.new
+    products = extractor.call(
+      client: client, credentials: {}, from_date: FROM_DATE,
+      stdout: StringIO.new, stderr: stderr,
+      remote_prompt_store: prompt
+    )
+
+    assert_includes stderr.string, "SCA elevation succeeded but"
+    assert_includes stderr.string, "did not return older history"
+    assert_includes stderr.string, "v2/products"
+    # Breadcrumb still stamped — downstream tooling sees the truncation.
+    refute_nil products.first["_partial_data_suspected"]
+  end
+
   # --- SCA failure modes: each one degrades cleanly to breadcrumb ----
 
   def test_sca_documentation_missing_acceptance_methods_falls_back

@@ -54,7 +54,9 @@ module Freentonic
             stdout.puts "  #{truncated.size} product(s) appear truncated; attempting SCA elevation..."
             if attempt_sca_elevation(client, remote_prompt_store, stdout, stderr)
               stdout.puts "  Re-fetching truncated product(s) with elevated session..."
+              pre_refetch_earliest = truncated.map { |p| earliest_movement_date(p) }
               truncated.each { |product| fetch_movements_into(product, client, from_date, stdout, stderr) }
+              warn_if_refetch_was_ineffective(truncated, pre_refetch_earliest, stderr)
             end
           end
 
@@ -183,6 +185,37 @@ module Freentonic
             "movement_count"      => movements.size,
             "reason"              => "sca_elevation_required_suspected"
           }
+        end
+
+        def earliest_movement_date(product)
+          Array(product["movements"]).map { |mv| movement_date(mv) }.compact.min
+        end
+
+        # When the post-SCA re-fetch comes back with the same earliest
+        # movement as before, the elevation we just performed didn't
+        # actually unlock older history on the endpoint we hit. The most
+        # likely cause is a host/endpoint mismatch: the SCA we drove
+        # elevates the v2 transactions endpoint (api.ing.ingdirect.es)
+        # but legacy_fetch_all_movements hits the legacy /movements
+        # endpoint on ing.ingdirect.es which is governed by different
+        # rules (probably needs a Bearer minted via accesstoken/
+        # synchronize after the SCA PUT commit). Surface this hypothesis
+        # explicitly so the next operator sees it without having to
+        # diff stderr against the source.
+        def warn_if_refetch_was_ineffective(truncated, pre_refetch_earliest, stderr)
+          truncated.zip(pre_refetch_earliest).each do |product, before|
+            after = earliest_movement_date(product)
+            next if before.nil? || after.nil?
+            next if after < before  # re-fetch went further back; elevation worked
+            name = first_present(product["alias"], product["name"]) || "ING product"
+            stderr.puts "    ⚠ SCA elevation succeeded but #{name} re-fetch did not " \
+                        "return older history (earliest still #{after.iso8601}). The " \
+                        "legacy /genoma_api/rest/products/{uuid}/movements endpoint " \
+                        "may not honor the elevation we performed; migrating this " \
+                        "fetch path to api.ing.ingdirect.es/v2/products/{uuid}/" \
+                        "transactions with a Bearer minted via accesstoken/synchronize " \
+                        "is the next step."
+          end
         end
 
         def movement_date(mv)
