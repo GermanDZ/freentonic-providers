@@ -109,16 +109,26 @@ module Freentonic
         # ---------------------------------------------------------------
 
         def run_v2_elevated_path(client, api_headers, from_date, stdout, stderr, prompt_store)
-          install_captured_headers(client, api_headers, stdout)
+          # Auth headers for api.ing.ingdirect.es are passed explicitly
+          # to each raw_request — never installed on the client globally
+          # via update_auth_headers!. That keeps the client's persistent
+          # auth_headers as cookie-only, so a v2 failure mid-flight
+          # doesn't poison the legacy fallback (which would otherwise
+          # 401 because the bank's edge rejects requests with stale or
+          # wrong-scope Bearers, even when the cookie alone would work).
+          # SCA endpoints live on the genoma host and use cookie auth —
+          # they don't get the Bearer either.
+          api_auth = api_host_auth(api_headers["Authorization"], api_headers["X-ING-ExtendedSessionContext"])
+          stdout.puts "  v2 path active. Bearer + ESC will be passed per-call to api host."
 
-          position = fetch_position_keeping(client, stdout, stderr)
+          position = fetch_position_keeping(client, api_auth, stdout, stderr)
           return nil unless position
 
           return nil unless attempt_sca_elevation(client, prompt_store, stdout, stderr)
 
-          new_bearer = refresh_bearer_after_sca(client, stdout, stderr)
+          new_bearer = refresh_bearer_after_sca(client, api_auth, stdout, stderr)
           return nil unless new_bearer
-          client.update_auth_headers!("Authorization" => "Bearer #{new_bearer}")
+          api_auth = api_host_auth("Bearer #{new_bearer}", api_headers["X-ING-ExtendedSessionContext"])
 
           uuid_map = build_uuid_map(position["products"])
           products = Array(position["legacyProducts"])
@@ -130,9 +140,11 @@ module Freentonic
             v2_uuid = uuid_map[product["uuid"]]
 
             if kind == "asset" && v2_uuid
-              fetch_v2_transactions_into(product, client, v2_uuid, from_date, stdout, stderr)
+              fetch_v2_transactions_into(product, client, v2_uuid, api_auth, from_date, stdout, stderr)
             else
-              # Credit cards (no v2 UUID) and any defensive fallback.
+              # Credit cards (no v2 UUID) — legacy endpoint, cookie auth
+              # only. Pass no api_auth headers; client.legacy_fetch_all_movements
+              # uses the declared auth_headers (cookie + genoma-session-id).
               fetch_legacy_movements_into(product, client, from_date, stdout, stderr)
             end
           end
@@ -141,30 +153,25 @@ module Freentonic
         end
 
         # ---------------------------------------------------------------
-        # Captured-headers install + per-step v2 helpers.
+        # v2 helpers — each takes an explicit api_auth Hash so client
+        # state stays clean. api_auth is built once per "auth scope" (one
+        # for pre-SCA captured Bearer, one for post-SCA refreshed Bearer).
         # ---------------------------------------------------------------
 
-        # The api_headers Hash comes from the workflow's
-        # capture_outbound_request_headers step — its keys are spelled
-        # exactly as we requested. Authorization is the bank's frontend's
-        # current Bearer (low-LoA at this point); ESC is the persistent
-        # affluent-tier marker. Both are required by the api host's
-        # endpoints (cookie-only doesn't open them).
-        def install_captured_headers(client, api_headers, stdout)
-          stdout.puts "  Installing captured api headers..."
-          headers = {}
-          headers["Authorization"]                = api_headers["Authorization"]                if api_headers["Authorization"]
-          headers["X-ING-ExtendedSessionContext"] = api_headers["X-ING-ExtendedSessionContext"] if api_headers["X-ING-ExtendedSessionContext"]
-          headers["X-XSRF-TOKEN"]                 = api_headers["X-XSRF-TOKEN"]                 if api_headers["X-XSRF-TOKEN"]
-          client.update_auth_headers!(headers)
+        def api_host_auth(bearer, esc)
+          h = {}
+          h["Authorization"]                = bearer if bearer && !bearer.to_s.empty?
+          h["X-ING-ExtendedSessionContext"] = esc    if esc    && !esc.to_s.empty?
+          h
         end
 
-        def fetch_position_keeping(client, stdout, stderr)
+        def fetch_position_keeping(client, api_auth, stdout, stderr)
           stdout.puts "  Fetching /position-keeping for V1ID→UUID mapping..."
           resp = client.raw_request(
-            method: :get,
-            path:   "/position-keeping",
-            base:   ING_API_HOST
+            method:  :get,
+            path:    "/position-keeping",
+            base:    ING_API_HOST,
+            headers: api_auth
           )
           unless resp.is_a?(Hash) && resp["legacyProducts"].is_a?(Array)
             stderr.puts "    ✗ /position-keeping: missing legacyProducts array"
@@ -176,12 +183,13 @@ module Freentonic
           nil
         end
 
-        def refresh_bearer_after_sca(client, stdout, stderr)
+        def refresh_bearer_after_sca(client, api_auth, stdout, stderr)
           stdout.puts "  Refreshing Bearer after SCA elevation..."
           resp = client.raw_request(
-            method: :get,
-            path:   "/saf/tpa/accesstoken/synchronize",
-            base:   ING_API_HOST
+            method:  :get,
+            path:    "/saf/tpa/accesstoken/synchronize",
+            base:    ING_API_HOST,
+            headers: api_auth
           )
           token = resp.dig("accessTokens", 0, "accessToken")
           if token.to_s.empty?
@@ -290,7 +298,7 @@ module Freentonic
         # doesn't need to know which path produced them.
         # ---------------------------------------------------------------
 
-        def fetch_v2_transactions_into(product, client, raw_uuid, from_date, stdout, stderr)
+        def fetch_v2_transactions_into(product, client, raw_uuid, api_auth, from_date, stdout, stderr)
           stdout.puts "  Fetching transactions (v2) for #{first_present(product['alias'], product['name'])}..."
           all = []
           offset = 0
@@ -298,9 +306,10 @@ module Freentonic
           loop do
             resp = safe_fetch(stderr, "v2 transactions") {
               client.raw_request(
-                method: :get,
-                path:   "/v2/products/#{raw_uuid}/transactions",
-                base:   ING_API_HOST,
+                method:  :get,
+                path:    "/v2/products/#{raw_uuid}/transactions",
+                base:    ING_API_HOST,
+                headers: api_auth,
                 params: {
                   limit:     V2_PAGE_LIMIT,
                   offset:    offset,

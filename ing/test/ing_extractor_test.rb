@@ -280,17 +280,30 @@ class IngExtractorTest < Minitest::Test
       remote_prompt_store: prompt
     )
 
-    # Captured headers installed first, then post-SCA bearer overrides.
-    assert_equal "Bearer high-loa", client.auth_overrides["Authorization"]
-    assert_equal "ESC-marker",      client.auth_overrides["X-ING-ExtendedSessionContext"]
+    # Client's persistent auth state is NEVER mutated — each api host
+    # call gets the Bearer + ESC explicitly via raw_request `headers:`.
+    assert_empty client.auth_overrides
 
     paths = client.raw_calls.map { |c| c[:path] }
     assert_includes paths, "/position-keeping"
     assert_includes paths, "/genoma_api/rest/sca/documentation"
     assert_includes paths, "/saf/tpa/accesstoken/synchronize"
     assert paths.any? { |p| p.start_with?("/v2/products/raw-asset-uuid/transactions") }
-    # Note: NO /genoma_api/saf/tpa/accesstoken (no server-side mint).
     refute_includes paths, "/genoma_api/saf/tpa/accesstoken"
+
+    # Pre-SCA api host calls carry the captured (low-LoA) bearer.
+    pk_call = client.raw_calls.find { |c| c[:path] == "/position-keeping" }
+    assert_equal "Bearer captured-low-loa",  pk_call[:headers]["Authorization"]
+    assert_equal "ESC-marker",                pk_call[:headers]["X-ING-ExtendedSessionContext"]
+
+    # SCA endpoints (genoma host) get NO Bearer — cookie auth only.
+    sca_call = client.raw_calls.find { |c| c[:path] == "/genoma_api/rest/sca/documentation" && c[:method] == :get }
+    refute sca_call[:headers].key?("Authorization"), "SCA endpoints must not carry Bearer"
+
+    # Post-refresh v2 calls carry the high-LoA bearer.
+    v2_call = client.raw_calls.find { |c| c[:path].start_with?("/v2/products/raw-asset-uuid") }
+    assert_equal "Bearer high-loa",   v2_call[:headers]["Authorization"]
+    assert_equal "ESC-marker",         v2_call[:headers]["X-ING-ExtendedSessionContext"]
 
     asset = products.find { |p| p["uuid"] == "p-asset" }
     card  = products.find { |p| p["uuid"] == "p-card"  }
@@ -319,6 +332,33 @@ class IngExtractorTest < Minitest::Test
 
     assert_empty prompt.calls
     refute_nil products.first["_partial_data_suspected"]
+  end
+
+  def test_v2_failure_does_not_pollute_client_state_for_legacy_fallback
+    # Regression: a previous version of this code installed the captured
+    # Bearer onto the client globally via update_auth_headers!. When v2
+    # failed mid-flight the legacy fallback still went out with a stale
+    # Bearer, and the bank's edge proxy 401'd the request even though
+    # the cookie alone would have been fine. The fix passes Bearer + ESC
+    # only as per-call headers on raw_request — client state stays
+    # cookie-only for the legacy path's declared endpoints.
+    client = StubClient.new
+    client.products = [asset_product]
+    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
+    client.raw_responses["/position-keeping"] = { "wrong_shape" => true }  # forces v2 fallback
+    prompt = StubPromptStore.new
+
+    extractor.call(
+      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
+      from_date: LONG_LOOKBACK,
+      stdout: StringIO.new, stderr: StringIO.new,
+      remote_prompt_store: prompt
+    )
+
+    # update_auth_headers! never called — client's persistent auth is unchanged.
+    assert_empty client.auth_overrides
+    # legacy fetch happened (the fallback) — and it ran without Bearer pollution.
+    refute_empty client.movements_calls
   end
 
   def test_sca_prompt_timeout_falls_back_to_legacy
