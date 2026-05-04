@@ -54,6 +54,7 @@ module Freentonic
           bank_name    = sample["_bank_name"] || "Bank #{bank_id}"
           kind         = KIND_BY_TYPE[product_type] || "asset"
           source_id    = "#{bank_id}:#{product_id}"
+          portable_ref, portable_id = portable_keys_for(product_type, bank_id, product_id)
 
           Builder.build_account(
             institution: INSTITUTION,
@@ -62,6 +63,8 @@ module Freentonic
             name:        "#{bank_name} #{product_type} ##{product_id}",
             type:        kind == "liability" ? "credit_card" : "checking",
             iban:        nil,
+            portable_ref: portable_ref,
+            portable_id:  portable_id,
             balance:     nil,
             metadata: {
               "fintonic_bank_id"    => bank_id,
@@ -69,6 +72,25 @@ module Freentonic
               "fintonic_type"       => product_type
             }
           )
+        end
+
+        # Cross-provider portable key for Spanish-bank products. The 4-digit
+        # guard catches both the BBAN tail (accounts) and PAN last-4 (cards)
+        # — the shape that a direct provider can match. Opaque hashed
+        # product_ids (banks 0232, 2048, etc.) fall back to the legacy
+        # (institution, source_id) derivation since they don't collide with
+        # anything observable from a direct scrape. portable_id prefix
+        # disambiguates account vs card matches in human-readable logs.
+        def portable_keys_for(product_type, bank_id, product_id)
+          return [nil, nil] unless product_id.to_s.match?(/\A\d{4}\z/)
+          ref = "#{bank_id}:#{product_id}"
+          prefix =
+            case product_type
+            when "ACCOUNT"                 then "bank"
+            when "CREDITCARD", "CREDIT_CARD" then "card"
+            else return [nil, nil]
+            end
+          [ref, "#{prefix}:#{ref}"]
         end
 
         def build_liability(sample, account)

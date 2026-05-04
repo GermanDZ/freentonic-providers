@@ -202,6 +202,52 @@ class FintonicNormalizerTest < Minitest::Test
     assert_equal a.transactions.first.id, b.transactions.first.id
   end
 
+  def test_account_with_4digit_product_id_uses_portable_ref
+    payload = normalizer.call(make_raw(transactions: [
+      make_tx("type" => "ACCOUNT", "bankId" => "1465", "productId" => "1272")
+    ]))
+    acct = payload.accounts.first
+    # Institution is dropped from the digest when portable_ref is set, so the
+    # acc_<hex> matches what a direct ING/Unicaja scrape would produce.
+    expected = Freentonic::Canonical.account_id(
+      institution: "ing", portable_ref: "1465:1272"
+    )
+    assert_equal expected, acct.id
+    assert_equal "bank:1465:1272", acct.portable_id
+  end
+
+  def test_credit_card_uses_card_portable_ref
+    payload = normalizer.call(make_raw(transactions: [
+      make_tx("type" => "CREDITCARD", "bankId" => "2103", "productId" => "8619")
+    ]))
+    acct = payload.accounts.first
+    expected = Freentonic::Canonical.account_id(
+      institution: "any", portable_ref: "2103:8619"
+    )
+    assert_equal expected, acct.id
+    assert_equal "card:2103:8619", acct.portable_id
+  end
+
+  def test_opaque_product_id_falls_back_to_legacy_derivation
+    payload = normalizer.call(make_raw(transactions: [
+      make_tx("type" => "ACCOUNT", "bankId" => "0232", "productId" => "a91f8c4e")
+    ]))
+    legacy = Freentonic::Canonical.account_id(
+      institution: "fintonic", source_id: "0232:a91f8c4e"
+    )
+    assert_equal legacy, payload.accounts.first.id
+  end
+
+  def test_same_day_duplicate_transactions_get_distinct_ids
+    txs = [
+      make_tx("id" => "tx-A", "quantity" => -680, "description" => "KEPLER"),
+      make_tx("id" => "tx-B", "quantity" => -680, "description" => "KEPLER")
+    ]
+    payload = normalizer.call(make_raw(transactions: txs))
+    assert_equal 2, payload.transactions.size
+    refute_equal payload.transactions[0].id, payload.transactions[1].id
+  end
+
   def test_wire_format_money_string_no_cents
     wire = normalizer.call(make_raw).to_h
     assert_equal "-23.14", wire["transactions"].first["amount"]
