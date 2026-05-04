@@ -68,6 +68,20 @@ class IngNormalizerTest < Minitest::Test
 
     assert_equal 20, acct.metadata["ing_product_type"]
     assert_equal "ing_live:product_balance", acct.metadata["balance_source"]
+    assert_nil acct.metadata["partial_data_suspected"]
+  end
+
+  def test_partial_data_breadcrumb_is_surfaced_on_account_metadata
+    breadcrumb = {
+      "from_date_requested" => "2024-11-10",
+      "earliest_returned"   => "2026-03-13",
+      "gap_days"            => 488,
+      "movement_count"      => 92,
+      "reason"              => "sca_elevation_required_suspected"
+    }
+    payload = normalizer.call([asset_product("_partial_data_suspected" => breadcrumb)])
+    acct = payload.accounts.first
+    assert_equal breadcrumb, acct.metadata["partial_data_suspected"]
   end
 
   # --- liability (credit card) ------------------------------------------

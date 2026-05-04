@@ -80,9 +80,10 @@ module Freentonic
             portable_id:  portable_id,
             balance:     { current: Builder.cents_to_amount(balance_cents), timestamp: nil },
             metadata: {
-              "ing_product_type"   => product["type"],
-              "ing_product_number" => product["productNumber"],
-              "balance_source"     => balance_source
+              "ing_product_type"        => product["type"],
+              "ing_product_number"      => product["productNumber"],
+              "balance_source"          => balance_source,
+              "partial_data_suspected"  => product["_partial_data_suspected"]
             }.compact
           )
         end
