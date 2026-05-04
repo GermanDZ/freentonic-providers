@@ -106,10 +106,20 @@ module Freentonic
         end
 
 
+        ING_BANK_CODE = "1465"
+
         def build_account(product, kind)
           uuid = product["uuid"]
           iban = product["iban"].to_s.gsub(/\s/, "")
+          iban = nil if iban.empty?
           balance_cents, balance_source = extract_balance(product, kind)
+
+          portable_ref, portable_id =
+            if kind == "liability"
+              card_portable_keys(product["productNumber"])
+            else
+              account_portable_keys(iban)
+            end
 
           Builder.build_account(
             institution: INSTITUTION,
@@ -117,7 +127,9 @@ module Freentonic
             currency:    product["currency"] || "EUR",
             name:        pick_name(product),
             type:        kind == "liability" ? "credit_card" : "checking",
-            iban:        iban.empty? ? nil : iban,
+            iban:        iban,
+            portable_ref: portable_ref,
+            portable_id:  portable_id,
             balance:     { current: Builder.cents_to_amount(balance_cents), timestamp: nil },
             metadata: {
               "ing_product_type"     => product["type"],
@@ -126,6 +138,28 @@ module Freentonic
               "ing_merged_plastics"  => product["_merged_plastics"]
             }.compact
           )
+        end
+
+        # Spanish IBAN: ES kk BBBB GGGG DD CCCCCCCCCC
+        # CCC bank code = bytes 4..7. ING's is always 1465; pinning it
+        # explicitly keeps the portable_ref shape consistent with the
+        # cards (which have no IBAN to derive the bank code from).
+        def account_portable_keys(iban)
+          return [nil, nil] unless iban && iban.length >= 18 && iban.start_with?("ES")
+          ref = "#{ING_BANK_CODE}:#{iban[-4, 4]}"
+          [ref, "bank:#{ref}"]
+        end
+
+        # Cards have no IBAN. The collapsed credit-line product carries the
+        # primary plastic's PAN as productNumber; pan_last4 strips it down
+        # to a stable per-line last-4. Returns [nil, nil] when the PAN is
+        # missing or has fewer than 4 digits — falls back to the legacy
+        # (institution, source_id) derivation in Canonical.account_id.
+        def card_portable_keys(product_number)
+          last4 = pan_last4(product_number)
+          return [nil, nil] unless last4
+          ref = "#{ING_BANK_CODE}:#{last4}"
+          [ref, "card:#{ref}"]
         end
 
         # Asset products carry a top-level numeric `balance` (the cleared

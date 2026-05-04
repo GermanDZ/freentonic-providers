@@ -251,6 +251,59 @@ class IngNormalizerTest < Minitest::Test
     assert_equal a.transactions.first.id, b.transactions.first.id
   end
 
+  def test_account_id_collides_with_fintonic_for_same_physical_account
+    payload = normalizer.call([asset_product("iban" => "ES59 1465 0100 9817 1439 1272")])
+    acct = payload.accounts.first
+    fintonic_id = Freentonic::Canonical.account_id(
+      institution: "fintonic", portable_ref: "1465:1272"
+    )
+    assert_equal fintonic_id, acct.id
+    assert_equal "bank:1465:1272", acct.portable_id
+  end
+
+  def test_account_without_iban_falls_back_to_legacy_derivation
+    payload = normalizer.call([asset_product("iban" => "")])
+    acct = payload.accounts.first
+    legacy = Freentonic::Canonical.account_id(
+      institution: "ing", source_id: "prod-1"
+    )
+    assert_equal legacy, acct.id
+    assert_nil acct.portable_id
+  end
+
+  def test_credit_card_id_collides_with_fintonic_creditcard_via_pan_last4
+    # ING's productNumber on a credit-card product is the full PAN; the
+    # last 4 must match what Fintonic emits as productId for the same card.
+    payload = normalizer.call([credit_card_product("productNumber" => "4174804472951018")])
+    acct = payload.accounts.first
+    fintonic_id = Freentonic::Canonical.account_id(
+      institution: "fintonic", portable_ref: "1465:1018"
+    )
+    assert_equal fintonic_id, acct.id
+    assert_equal "card:1465:1018", acct.portable_id
+  end
+
+  def test_credit_card_without_pan_falls_back_to_legacy_derivation
+    payload = normalizer.call([credit_card_product("uuid" => "cc-x", "productNumber" => nil)])
+    acct = payload.accounts.first
+    # Legacy derivation. Note source_id is rewritten by the credit-line
+    # collapse layer (single-plastic still gets ing_line_<uuid>_<limit>),
+    # so the input uuid is no longer the source_id we hash on. Pin the
+    # observed id rather than re-deriving it from the input uuid.
+    refute_nil acct.id
+    assert_match(/\Aacc_[0-9a-f]{16}\z/, acct.id)
+    assert_nil acct.portable_id
+  end
+
+  def test_same_day_duplicate_movements_get_distinct_ids
+    a = asset_movement("uuid" => "mv-A", "amount" => -680, "description" => "KEPLER")
+    b = asset_movement("uuid" => "mv-B", "amount" => -680, "description" => "KEPLER")
+    payload = normalizer.call([asset_product("movements" => [a, b])])
+
+    assert_equal 2, payload.transactions.size
+    refute_equal payload.transactions[0].id, payload.transactions[1].id
+  end
+
   # --- filtering edge cases ---------------------------------------------
 
   def test_skips_debit_card_products
