@@ -64,20 +64,40 @@ phases:
       seconds: 3
 
   approve_2fa:
-    # SMS code sent to user's phone — prompt in terminal and fill.
+    # Since ~May 2026 the SMS challenge lives on its own page,
+    # /private/verify, with a single numeric input. The previous
+    # design (inline MUI dialog on /private/login) is gone; the
+    # MuiInputBase / MuiButton-containedPrimary selectors no longer
+    # match anything. We wait for the verify URL, then for the
+    # numeric input, then prompt + fill + submit.
+    - action: wait_url
+      includes: "/private/verify"
+      timeout: 30
+    - action: wait_for_selector
+      selector: "input[type=\"number\"]"
+      timeout: 30
     - action: prompt_stdin_and_fill
-      selector: "input.MuiInputBase-input.MuiInput-input"
+      selector: "input[type=\"number\"]"
       prompt: "Enter the SMS code Fintonic sent to your phone: "
       timeout: 300
-    # Button enables after 4 digits are entered.
+    # Submit. The /private/verify page renders a plain `<button>Entrar</button>`
+    # inside the first <section> — no explicit `type=submit`, no stable
+    # class (recorder marked it `needs_review` with nth-child path),
+    # and React enables it asynchronously after the SMS code is fully
+    # entered. We scope by `section` to avoid colliding with any other
+    # enabled button on the page (back, logout, cookie banner, etc.)
+    # and wait for the not-disabled state before clicking.
     - action: wait_for_selector
-      selector: "button.MuiButton-containedPrimary:not([disabled])"
+      selector: "section button:not([disabled])"
       timeout: 10
     - action: click
-      selector: "button.MuiButton-containedPrimary:not([disabled])"
-    - action: wait_url
-      includes: "/private/"
-      timeout: 30
+      selector: "section button:not([disabled])"
+    # After 2FA Fintonic redirects to the main private area; let
+    # the network settle before post_login navigates away. (wait_url
+    # would be satisfied immediately by /private/verify itself,
+    # since `includes:` is a substring match.)
+    - action: wait_network_idle
+      seconds: 5
 
   post_login:
     # Navigate to a page that triggers API calls so we can capture the token.
