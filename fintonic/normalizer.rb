@@ -116,7 +116,20 @@ module Freentonic
           quantity = tx["quantity"]
           return nil if quantity.nil? || quantity == 0
 
-          date = parse_date(tx["userDate"] || tx["valueDate"])
+          # Canonical date prefers the *original* bank-side date over the
+          # user-edited one. Rationale: Fintonic lets the user manually
+          # reattribute a transaction to a different date inside their
+          # app (`userDate`), and that's what its API returns first. But
+          # cross-source matching / dedup against a direct bank
+          # provider needs the bank's own posting date, otherwise the
+          # same logical transaction looks like two events on different
+          # dates (debugging note: Social-Security charges on the user's
+          # ING checking account drifted between ISO weeks because
+          # fintonic posted them on userDate and ING on effectiveDate).
+          # `userDate` is preserved in metadata.fintonic.userDate for
+          # any downstream consumer that wants to expose the
+          # user-chosen date.
+          date = parse_date(tx["operationDate"] || tx["valueDate"] || tx["userDate"])
           return nil unless date
 
           category_id   = resolve_category_id(tx)
