@@ -202,6 +202,77 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal true, merchant.normalized
   end
 
+  # Regression: Revolut returns internal transfers (TRANSFER, EXCHANGE, …)
+  # as a single envelope with multiple legs — every leg carries the
+  # same `id` (the transfer id) but a distinct `legId`. A previous
+  # version of build_transaction used `tx["id"] || tx["legId"]`, so
+  # both legs got the same source_id, collapsed onto one
+  # Canonical.transaction_id hash, and the canonical payload emitted
+  # two rows sharing one txn_<hex>. Downstream consumers upsert-on-id
+  # and silently dropped one leg of every transfer. The fix prefers
+  # `legId` so each leg gets a unique canonical id.
+  def test_transfer_legs_get_distinct_canonical_ids
+    transfer_id = "7c90ac30-5c9f-4dd8-aa4b-9f48390a65b8"
+    raw = {
+      "wallet"  => {},
+      "pockets" => [{ "id" => "p1", "currency" => "EUR", "balance" => 0 }],
+      "bank_details" => [],
+      "vaults" => [],
+      "pocket_transactions" => {
+        "p1" => [
+          { "id"          => transfer_id,
+            "legId"       => "7c90ac30-5c9f-4dd8-0000-9f48390a65b8",
+            "startedDate" => 1_536_105_600_000,
+            "amount"      => -5086,
+            "currency"    => "EUR",
+            "description" => "To EUR",
+            "type"        => "TRANSFER" },
+          { "id"          => transfer_id,
+            "legId"       => "7c90ac30-5c9f-4dd8-0001-9f48390a65b8",
+            "startedDate" => 1_536_105_600_000,
+            "amount"      => 5086,
+            "currency"    => "EUR",
+            "description" => "From EUR Experimento 1",
+            "type"        => "TRANSFER" }
+        ]
+      }
+    }
+
+    payload = normalizer.call(raw)
+
+    assert_equal 2, payload.transactions.size
+    ids = payload.transactions.map(&:id)
+    assert_equal ids.size, ids.uniq.size,
+                 "each leg must hash to a distinct canonical id"
+    source_ids = payload.transactions.map(&:source_id)
+    assert_includes source_ids, "7c90ac30-5c9f-4dd8-0000-9f48390a65b8"
+    assert_includes source_ids, "7c90ac30-5c9f-4dd8-0001-9f48390a65b8"
+  end
+
+  # When only `id` is present (no legId), fall back to id so we don't
+  # drop the transaction. (Single-leg shape — observed in some
+  # historical payloads / non-transfer event types.)
+  def test_falls_back_to_id_when_leg_id_missing
+    raw = {
+      "wallet"  => {},
+      "pockets" => [{ "id" => "p1", "currency" => "EUR", "balance" => 0 }],
+      "bank_details" => [],
+      "vaults" => [],
+      "pocket_transactions" => {
+        "p1" => [
+          { "id"          => "only-id-1",
+            "startedDate" => 1_710_504_000_000,
+            "amount"      => -100,
+            "currency"    => "EUR",
+            "description" => "x",
+            "type"        => "CARD_PAYMENT" }
+        ]
+      }
+    }
+    payload = normalizer.call(raw)
+    assert_equal "only-id-1", payload.transactions.first.source_id
+  end
+
   def test_ids_are_deterministic
     a = normalizer.call(pocket_raw)
     b = normalizer.call(pocket_raw)
