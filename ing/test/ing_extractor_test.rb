@@ -466,7 +466,12 @@ class IngExtractorTest < Minitest::Test
     )
 
     mv = products.first["movements"].first
-    assert_equal "abc-123",       mv["uuid"]
+    # uuid is the stable per-position cursor (productId + sequence),
+    # NOT transactionLocalUUID — the latter carries a per-request nonce
+    # and would split the same ledger row into two canonical txn_ids
+    # across requests.
+    assert_equal "v2-seq:x:42",   mv["uuid"]
+    assert_equal "abc-123",       mv["_v2_transactionLocalUUID"]
     assert_equal "15/04/2026",    mv["effectiveDate"]
     assert_equal -55.5,           mv["amount"]
     assert_equal "Amazon Marketplace", mv["description"]
@@ -475,6 +480,85 @@ class IngExtractorTest < Minitest::Test
     assert_equal "EUR",           mv["currency"]
     assert_equal true,            mv["_v2_source"]
     assert_equal 42,              mv["_v2_transactionSequence"]
+  end
+
+  # Regression: ING's v2 endpoint occasionally returns the same underlying
+  # ledger row twice within a single fetch, each copy carrying a different
+  # `transactionLocalUUID` (per-request encrypted token). Before the fix
+  # this surfaced as two distinct canonical txn_<hex> IDs downstream and
+  # SimpleFIN consumers ingested duplicates. The stable cursor is
+  # `transactionId.{productId, transactionSequence}` — the per-position
+  # ledger key — and two records sharing it must coerce to identical
+  # `uuid` so Canonical.transaction_id collapses them.
+  def test_v2_same_sequence_different_local_uuid_collapses_to_one
+    client = StubClient.new
+    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
+    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response
+    # Same productId + transactionSequence in both records — only the
+    # opaque transactionLocalUUID differs (simulating ING's per-request
+    # nonce). They must end up with the same `uuid` after coercion.
+    client.v2_pages_by_uuid["raw-asset-uuid"] = [
+      v2_page([
+        {
+          "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 7 },
+          "amount" => -132.74, "balance" => 0.0, "concept" => nil,
+          "description" => "Recibo AYTO DE ALCOBENDAS I V T ",
+          "transactionDate" => "2026-05-11", "transactionCode" => "RECIBSEPA",
+          "transactionLocalUUID" => "___V1ID___nonceA___V1ID___"
+        },
+        {
+          "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 7 },
+          "amount" => -132.74, "balance" => 0.0, "concept" => nil,
+          "description" => "Recibo AYTO DE ALCOBENDAS I V T ",
+          "transactionDate" => "2026-05-11", "transactionCode" => "RECIBSEPA",
+          "transactionLocalUUID" => "___V1ID___nonceB___V1ID___"
+        }
+      ], offset: 0, more: false)
+    ]
+    prompt = StubPromptStore.new
+
+    products = extractor.call(
+      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
+      from_date: LONG_LOOKBACK,
+      stdout: StringIO.new, stderr: StringIO.new,
+      remote_prompt_store: prompt
+    )
+
+    uuids = products.first["movements"].map { |mv| mv["uuid"] }
+    assert_equal ["v2-seq:raw-asset-uuid:7", "v2-seq:raw-asset-uuid:7"], uuids
+    # The local-uuid divergence is still observable for debugging.
+    local_uuids = products.first["movements"].map { |mv| mv["_v2_transactionLocalUUID"] }
+    assert_equal ["___V1ID___nonceA___V1ID___", "___V1ID___nonceB___V1ID___"], local_uuids
+  end
+
+  # Defensive: if ING ever omits transactionId (shouldn't happen, but the
+  # v2 schema is partially documented), fall back to transactionLocalUUID
+  # so the row still makes it through with a usable — if non-stable — id.
+  def test_v2_missing_transaction_id_falls_back_to_local_uuid
+    client = StubClient.new
+    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
+    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response
+    client.v2_pages_by_uuid["raw-asset-uuid"] = [
+      v2_page([{
+        # No "transactionId" at all
+        "amount" => -10.0, "balance" => 0.0,
+        "description" => "TX", "transactionDate" => "2026-04-15",
+        "transactionCode" => "TRANS",
+        "transactionLocalUUID" => "fallback-uuid"
+      }], offset: 0, more: false)
+    ]
+    prompt = StubPromptStore.new
+
+    products = extractor.call(
+      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
+      from_date: LONG_LOOKBACK,
+      stdout: StringIO.new, stderr: StringIO.new,
+      remote_prompt_store: prompt
+    )
+
+    assert_equal "fallback-uuid", products.first["movements"].first["uuid"]
   end
 
   # --- v2 pagination terminates on count=0 OR mayHasMoreElements=false

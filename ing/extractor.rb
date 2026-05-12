@@ -334,9 +334,22 @@ module Freentonic
         # Translate v2 → legacy /movements field names so the normalizer
         # doesn't need to dispatch on shape. v2-only fields land under
         # _v2_* keys for downstream debugging.
+        #
+        # The "uuid" we emit is the *stable* per-ledger-position identifier,
+        # NOT `transactionLocalUUID`. ING's v2 endpoint returns
+        # `transactionLocalUUID` in an opaque `___V1ID___<encrypted>___V1ID___`
+        # envelope whose middle bytes carry a per-request nonce — two fetches
+        # (or two pages of one fetch) of the same underlying movement get
+        # two different `transactionLocalUUID` values. Using it downstream
+        # as the source_id for Canonical.transaction_id produced two distinct
+        # txn_<hex> IDs for the same real bank transaction, which SimpleFIN
+        # clients then ingested as duplicates. `transactionId.{productId,
+        # transactionSequence}` is the actual stable cursor for the same
+        # row on subsequent requests; we use it as `uuid` so downstream
+        # (legacy normalizer code) keeps working unchanged.
         def coerce_v2_transaction_to_legacy_shape(tx)
           {
-            "uuid"          => tx["transactionLocalUUID"],
+            "uuid"          => v2_stable_uuid(tx),
             "amount"        => tx["amount"],
             "effectiveDate" => yyyy_mm_dd_to_dd_mm_yyyy(tx["transactionDate"]),
             "description"   => tx["description"],
@@ -348,8 +361,22 @@ module Freentonic
             "_v2_issuerId"            => tx["issuerId"],
             "_v2_excludedAmount"      => tx["excludedAmount"],
             "_v2_balance"             => tx["balance"],
-            "_v2_transactionSequence" => tx.dig("transactionId", "transactionSequence")
+            "_v2_transactionSequence" => tx.dig("transactionId", "transactionSequence"),
+            "_v2_transactionLocalUUID" => tx["transactionLocalUUID"]
           }
+        end
+
+        # Per-product, per-position stable id. Falls back to the
+        # non-stable transactionLocalUUID only if ING ever omits
+        # transactionId fields — better than producing nothing.
+        def v2_stable_uuid(tx)
+          product_id = tx.dig("transactionId", "productId").to_s
+          seq        = tx.dig("transactionId", "transactionSequence").to_s
+          if !product_id.empty? && !seq.empty?
+            "v2-seq:#{product_id}:#{seq}"
+          else
+            tx["transactionLocalUUID"]
+          end
         end
 
         def yyyy_mm_dd_to_dd_mm_yyyy(s)
