@@ -116,6 +116,45 @@ class UnicajaExtractorPaginationTest < Minitest::Test
     assert_equal 1481.0, client.extended_calls[2][:saldo_ult_mov]
   end
 
+  # Regression: Unicaja's standard /cuentas/movimientos endpoint stamps
+  # the per-account sequence number on a row as `nummov`, while the
+  # extended /apis/externo/.../busqueda endpoint uses `numMovimiento`
+  # for the same field. A row that appears in BOTH responses (the
+  # standard window overlaps the tail of the extended window) must
+  # collapse to one entry, regardless of which field name carries the
+  # sequence. Before this fix the dedup only checked `numMovimiento`;
+  # standard-endpoint rows had it nil and slipped through as
+  # "no-key, keep unconditionally", producing two canonical txns that
+  # hashed to the same id and surfaced as visible duplicates in the
+  # consolidated SimpleFIN envelope.
+  def test_merge_dedupes_across_nummov_and_numMovimiento_field_naming
+    extended_pages = [
+      build_response(40, 3, 1300.00, more: false)  # rows 40, 41, 42 — numMovimiento style
+    ]
+    # Standard endpoint: row 42 appears here under `nummov`. Row 43 is
+    # new (only in the standard window).
+    standard = [
+      { "fechaoper" => "2025-06-01", "concepto" => "row 42",
+        "nummov" => "42",
+        "importe" => { "cantidad" => -100.0, "moneda" => "EUR" } },
+      { "fechaoper" => "2025-06-01", "concepto" => "row 43",
+        "nummov" => "43",
+        "importe" => { "cantidad" => -100.0, "moneda" => "EUR" } }
+    ]
+
+    result, _client, _stdout, _stderr = run_extract(
+      extended_pages,
+      standard_movements: standard
+    )
+
+    movements = result.fetch("cuenta_movements").fetch("001")
+    # Expect 4 unique (40, 41, 42, 43) — NOT 5 (the row-42 dupe must
+    # collapse even though the two copies have different field names).
+    assert_equal 4, movements.size
+    keys = movements.map { |m| m["numMovimiento"] || m["nummov"] }
+    assert_equal %w[40 41 42 43], keys.sort_by(&:to_i)
+  end
+
   def test_merges_and_deduplicates_standard_and_extended
     standard = [
       build_row(44, 1100.0),

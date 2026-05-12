@@ -175,11 +175,21 @@ module Freentonic
 
         # Merge extended (older) + recent movements, deduplicating by
         # numMovimiento when present.
+        # Unicaja's two transaction endpoints return the same logical
+        # movement under DIFFERENT field names: the extended-history
+        # endpoint uses `numMovimiento`, the standard endpoint uses
+        # `nummov`. Both carry the same per-account sequence number
+        # (e.g. "375"). Keying the dedup off only `numMovimiento` lets
+        # standard-endpoint records pass through unconditionally
+        # (their numMovimiento is nil → falls into the "true" branch),
+        # producing two canonical txns that hash to the same id and
+        # surface as duplicates in the consolidated SimpleFIN envelope.
+        # Normalize the lookup so either field counts as the same key.
         def merge_movements(old_movements, recent_movements)
           all = old_movements + recent_movements
           seen = {}
           all.select do |mov|
-            key = mov["numMovimiento"]
+            key = mov["numMovimiento"] || mov["nummov"]
             if key.nil?
               true
             elsif seen[key]
