@@ -100,7 +100,18 @@ module Freentonic
         # --- Transactions ---------------------------------------------------
 
         def build_transaction(pocket, account, tx)
-          tx_id = tx["id"] || tx["legId"]
+          # Source_id MUST be per-leg, not per-transfer. Revolut returns
+          # internal transfers (TRANSFER, EXCHANGE, …) as a single
+          # transfer envelope containing multiple legs — one debit leg
+          # and one credit leg, often on different pockets. Every leg
+          # in the envelope carries the same `id` (the transfer's id)
+          # but a distinct `legId`. Using `id` collapses both legs to
+          # the same Canonical.transaction_id hash, so the canonical
+          # payload ended up with two rows sharing one txn_<hex>; the
+          # consolidated SimpleFIN envelope then exposed duplicate ids
+          # to consumers, who typically upsert-on-id and silently drop
+          # one leg of every transfer.
+          tx_id = tx["legId"] || tx["id"]
           return nil unless tx_id
 
           amount_cents = extract_amount_cents(tx)
