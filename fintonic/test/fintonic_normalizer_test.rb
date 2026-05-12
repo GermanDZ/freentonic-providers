@@ -96,7 +96,10 @@ class FintonicNormalizerTest < Minitest::Test
     assert_match(/\Atxn_[0-9a-f]{16}\z/, txn.id)
     assert_equal payload.accounts.first.id, txn.account_id
     assert_equal "tx-1",             txn.source_id
-    assert_equal Date.new(2024, 6, 15), txn.date
+    # Canonical date is the *original* bank operation date (precedence:
+    # operationDate, then valueDate, then userDate). userDate is the
+    # user-edited value and lives in metadata only.
+    assert_equal Date.new(2024, 6, 13), txn.date
     assert_equal BigDecimal("-23.14"), txn.amount
     assert_equal "EUR",              txn.currency
     assert_equal "MERCADONA",        txn.raw_description
@@ -118,13 +121,40 @@ class FintonicNormalizerTest < Minitest::Test
     assert_empty payload.transactions
   end
 
-  def test_falls_back_to_value_date
-    payload = normalizer.call(make_raw(transactions: [make_tx("userDate" => nil, "valueDate" => "2024-07-01")]))
+  def test_falls_back_to_value_date_when_operation_date_missing
+    # operationDate nil → valueDate wins.
+    payload = normalizer.call(make_raw(transactions: [make_tx("operationDate" => nil, "userDate" => "2024-07-15", "valueDate" => "2024-07-01")]))
     assert_equal Date.new(2024, 7, 1), payload.transactions.first.date
   end
 
+  def test_falls_back_to_user_date_when_operation_and_value_date_missing
+    # Both bank-side dates missing → userDate as last resort (so old
+    # transactions where Fintonic only stamped userDate still resolve
+    # to a date instead of being silently dropped).
+    payload = normalizer.call(make_raw(transactions: [make_tx("operationDate" => nil, "valueDate" => nil, "userDate" => "2024-07-15")]))
+    assert_equal Date.new(2024, 7, 15), payload.transactions.first.date
+  end
+
+  # Regression: a user-edited Fintonic transaction (userDate moved off
+  # the real bank date) must still keep the *bank* date as canonical so
+  # cross-source dedup vs the direct provider works. The edited date is
+  # observable in metadata for downstream consumers.
+  def test_user_edited_date_does_not_clobber_bank_operation_date
+    payload = normalizer.call(make_raw(transactions: [
+      make_tx(
+        "userDate"      => "2026-03-31",  # operator dragged it back to March
+        "valueDate"     => "2026-04-03",
+        "operationDate" => "2026-04-03"   # real bank date
+      )
+    ]))
+    txn = payload.transactions.first
+    assert_equal Date.new(2026, 4, 3), txn.date
+    assert_equal "2026-03-31",         txn.metadata.dig("fintonic", "userDate")
+    assert_equal "2026-04-03",         txn.metadata.dig("fintonic", "operationDate")
+  end
+
   def test_skips_when_no_date
-    payload = normalizer.call(make_raw(transactions: [make_tx("userDate" => nil, "valueDate" => nil)]))
+    payload = normalizer.call(make_raw(transactions: [make_tx("operationDate" => nil, "userDate" => nil, "valueDate" => nil)]))
     assert_empty payload.transactions
   end
 
