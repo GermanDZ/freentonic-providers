@@ -229,13 +229,44 @@ class IngNormalizerTest < Minitest::Test
     assert_equal Date.new(2024, 3, 20), payload.transactions.first.value_date
   end
 
-  def test_ids_are_deterministic
-    product = asset_product("movements" => [asset_movement])
-    a = normalizer.call([product])
-    b = normalizer.call([product])
+  # D1: two passes over the same raw payload must produce byte-identical
+  # canonical-id arrays for every entity kind. Audited empirically on a
+  # live ING capture (see simplefreen/reports/freentonic-id-stability-spec.md
+  # §Audit evidence — 187/187 records matched across two sessions); this
+  # test pins the property in CI against multi-record input so any future
+  # non-idempotent change (in-place mutation of raw, ordering bug, key
+  # randomization) is caught before it ships.
+  def test_ids_are_deterministic_across_multi_record_payload
+    raw = [
+      asset_product("uuid" => "prod-a",
+                    "iban" => "ES59 1465 0100 9817 1439 1272",
+                    "movements" => [
+                      asset_movement("uuid" => "mv-a1"),
+                      asset_movement("uuid" => "mv-a2", "amount" => -5.0,
+                                     "description" => "TRAIN")
+                    ]),
+      asset_product("uuid" => "prod-b",
+                    "iban" => "ES59 1465 0100 9817 1439 7251",
+                    "movements" => [
+                      asset_movement("uuid" => "mv-b1", "amount" => 1200.0,
+                                     "description" => "SALARY")
+                    ]),
+      credit_card_product("uuid" => "cc-a",
+                          "productNumber" => "4174804472951018",
+                          "movements" => [
+                            asset_movement("uuid" => "mv-cc1", "amount" => -8.0,
+                                           "description" => "AMAZON")
+                          ])
+    ]
+    a = normalizer.call(JSON.parse(JSON.generate(raw)))
+    b = normalizer.call(JSON.parse(JSON.generate(raw)))
 
-    assert_equal a.accounts.first.id,    b.accounts.first.id
-    assert_equal a.transactions.first.id, b.transactions.first.id
+    refute_empty a.accounts
+    refute_empty a.transactions
+    refute_empty a.liabilities
+    assert_equal a.accounts.map(&:id),     b.accounts.map(&:id)
+    assert_equal a.transactions.map(&:id), b.transactions.map(&:id)
+    assert_equal a.liabilities.map(&:id),  b.liabilities.map(&:id)
   end
 
   def test_account_id_collides_with_fintonic_for_same_physical_account

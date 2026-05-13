@@ -225,11 +225,35 @@ class FintonicNormalizerTest < Minitest::Test
     assert_equal true, merchant.normalized
   end
 
-  def test_ids_are_deterministic
-    a = normalizer.call(make_raw)
-    b = normalizer.call(make_raw)
-    assert_equal a.accounts.first.id,    b.accounts.first.id
-    assert_equal a.transactions.first.id, b.transactions.first.id
+  # D1: two passes over the same raw payload must produce byte-identical
+  # canonical-id arrays for every entity kind. See
+  # simplefreen/reports/freentonic-id-stability-spec.md §Audit evidence —
+  # ING was the only provider audited there; this test pins the same
+  # property for Fintonic in CI against a multi-product payload (one
+  # 4-digit-productId account, one opaque-productId account, one credit
+  # card) so any future non-idempotent change is caught before it ships.
+  def test_ids_are_deterministic_across_multi_record_payload
+    txs = [
+      make_tx("id" => "tx-a1", "bankId" => "1465", "productId" => "1272",
+              "type" => "ACCOUNT"),
+      make_tx("id" => "tx-a2", "bankId" => "1465", "productId" => "1272",
+              "type" => "ACCOUNT", "quantity" => -1500, "description" => "TRAIN"),
+      make_tx("id" => "tx-b1", "bankId" => "0232", "productId" => "deadbeefcafeface",
+              "type" => "ACCOUNT", "_bank_name" => "Unicaja",
+              "quantity" => -4500, "description" => "MERCADONA"),
+      make_tx("id" => "tx-c1", "bankId" => "1465", "productId" => "1018",
+              "type" => "CREDITCARD", "quantity" => -8000, "description" => "AMAZON")
+    ]
+    raw = make_raw(transactions: txs)
+    a = normalizer.call(JSON.parse(JSON.generate(raw)))
+    b = normalizer.call(JSON.parse(JSON.generate(raw)))
+
+    refute_empty a.accounts
+    refute_empty a.transactions
+    refute_empty a.liabilities
+    assert_equal a.accounts.map(&:id),     b.accounts.map(&:id)
+    assert_equal a.transactions.map(&:id), b.transactions.map(&:id)
+    assert_equal a.liabilities.map(&:id),  b.liabilities.map(&:id)
   end
 
   def test_account_with_4digit_product_id_uses_portable_ref

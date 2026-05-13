@@ -171,12 +171,48 @@ class UnicajaNormalizerTest < Minitest::Test
 
   # --- determinism / wire -----------------------------------------------
 
-  def test_ids_are_deterministic
-    raw = { "cuentas" => [cuenta], "cuenta_movements" => { "C-001" => [movement] } }
-    a = normalizer.call(raw)
-    b = normalizer.call(raw)
-    assert_equal a.accounts.first.id,     b.accounts.first.id
-    assert_equal a.transactions.first.id, b.transactions.first.id
+  # D1: two passes over the same raw payload must produce byte-identical
+  # canonical-id arrays for every entity kind. See
+  # simplefreen/reports/freentonic-id-stability-spec.md §Audit evidence —
+  # ING was the only provider audited there; this test pins the same
+  # property for Unicaja in CI against all three product kinds (cuenta,
+  # tarjeta, prestamo) plus the movement-id field-name fallback path
+  # (commit c226425), so any future non-idempotent change is caught
+  # before it ships.
+  def test_ids_are_deterministic_across_multi_record_payload
+    raw = {
+      "cuentas"   => [
+        cuenta("ppp" => "C-001"),
+        cuenta("ppp" => "C-002", "iban" => "ES1121030001234567897251",
+               "alias" => "Cuenta nómina")
+      ],
+      "tarjetas"  => [tarjeta("ppp" => "T-001",
+                              "numtarjeta" => "4174804472951018")],
+      "prestamos" => [prestamo("ppp" => "P-001")],
+      "cuenta_movements"  => {
+        "C-001" => [
+          movement("numMovimiento" => "M-1"),
+          # Exercise the nummov/numMovimiento dedupe path from c226425.
+          movement("nummov" => "M-2", "concepto" => "TRAIN",
+                   "importe" => { "cantidad" => -3.50, "divisa" => "EUR" })
+        ],
+        "C-002" => [movement("numMovimiento" => "M-3", "concepto" => "SALARY",
+                             "importe" => { "cantidad" => 1500.0, "divisa" => "EUR" })]
+      },
+      "tarjeta_movements" => {
+        "T-001" => [movement("numMovimiento" => "M-T1", "concepto" => "AMAZON",
+                             "importe" => { "cantidad" => -8.0, "divisa" => "EUR" })]
+      }
+    }
+    a = normalizer.call(JSON.parse(JSON.generate(raw)))
+    b = normalizer.call(JSON.parse(JSON.generate(raw)))
+
+    refute_empty a.accounts
+    refute_empty a.transactions
+    refute_empty a.liabilities
+    assert_equal a.accounts.map(&:id),     b.accounts.map(&:id)
+    assert_equal a.transactions.map(&:id), b.transactions.map(&:id)
+    assert_equal a.liabilities.map(&:id),  b.liabilities.map(&:id)
   end
 
   def test_account_id_collides_with_fintonic_for_same_physical_account

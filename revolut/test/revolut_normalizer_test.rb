@@ -273,11 +273,54 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal "only-id-1", payload.transactions.first.source_id
   end
 
-  def test_ids_are_deterministic
-    a = normalizer.call(pocket_raw)
-    b = normalizer.call(pocket_raw)
-    assert_equal a.accounts.first.id,    b.accounts.first.id
-    assert_equal a.transactions.first.id, b.transactions.first.id
+  # D1: two passes over the same raw payload must produce byte-identical
+  # canonical-id arrays for every entity kind. See
+  # simplefreen/reports/freentonic-id-stability-spec.md §Audit evidence —
+  # ING was the only provider audited there; this test pins the same
+  # property for Revolut in CI against multi-pocket + vault input,
+  # including the per-leg source_id path (PR #10), so any future
+  # non-idempotent change is caught before it ships.
+  def test_ids_are_deterministic_across_multi_record_payload
+    raw = {
+      "wallet"       => { "id" => "w1" },
+      "bank_details" => [
+        { "currency" => "EUR", "details" => { "accounts" => [{ "iban" => "LT00 1234 5678 9012 3456" }] } }
+      ],
+      "cards" => [],
+      "pockets" => [
+        { "id" => "p-main",  "currency" => "EUR", "balance" => 224_37,
+          "name" => "Revolut EUR", "type" => "CURRENT" },
+        { "id" => "p-saved", "currency" => "EUR", "balance" => 0,
+          "name" => "Experimento 1", "type" => "CURRENT" }
+      ],
+      "vaults" => [
+        { "id" => "vault-1", "name" => "Holiday Fund", "currency" => "EUR",
+          "balance" => { "amount" => 350.00, "currency" => "EUR" }, "goal" => 1000.00 }
+      ],
+      "pocket_transactions" => {
+        "p-main" => [
+          { "id" => "tr-1", "legId" => "tr-1-debit", "amount" => -1234,
+            "startedDate" => 1_710_504_000_000, "currency" => "EUR",
+            "description" => "Coffee", "type" => "CARD_PAYMENT" },
+          { "id" => "tr-2", "legId" => "tr-2-credit", "amount" => 50_000,
+            "startedDate" => 1_710_417_600_000, "currency" => "EUR",
+            "description" => "Bank Transfer", "type" => "TRANSFER" }
+        ],
+        "p-saved" => [
+          { "id" => "tr-3", "legId" => "tr-3-debit", "amount" => -100,
+            "startedDate" => 1_710_504_000_000, "currency" => "EUR",
+            "description" => "Vault top-up", "type" => "TRANSFER" }
+        ]
+      }
+    }
+    a = normalizer.call(JSON.parse(JSON.generate(raw)))
+    b = normalizer.call(JSON.parse(JSON.generate(raw)))
+
+    refute_empty a.accounts
+    refute_empty a.transactions
+    assert_equal a.accounts.map(&:id),     b.accounts.map(&:id)
+    assert_equal a.transactions.map(&:id), b.transactions.map(&:id)
+    assert_equal a.liabilities.map(&:id),  b.liabilities.map(&:id)
   end
 
   def test_wire_format_money_string_no_cents
