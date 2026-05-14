@@ -96,8 +96,12 @@ class UnicajaNormalizerTest < Minitest::Test
     acct = payload.accounts.first
     assert_equal "credit_card",   acct.type
     assert_equal "tarjeta:T-001", acct.source_id
-    # Outstanding = limite - disponible = 1500 - 1000 = 500
-    assert_equal BigDecimal("500.00"), acct.balance.current
+    # Outstanding = limite - disponible = 1500 - 1000 = 500. Account
+    # balance is stored NEGATIVE so debt-as-negative matches ING
+    # (ing/normalizer.rb#extract_balance) and the user sees -500 in
+    # downstream clients. The liability record below keeps the
+    # positive "amount owed" convention.
+    assert_equal BigDecimal("-500.00"), acct.balance.current
 
     assert_equal 1, payload.liabilities.size
     liab = payload.liabilities.first
