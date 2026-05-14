@@ -35,7 +35,8 @@ class RevolutNormalizerTest < Minitest::Test
             "amount"      => -1234,
             "currency"    => "EUR",
             "description" => "Coffee Shop",
-            "type"        => "CARD_PAYMENT"
+            "type"        => "CARD_PAYMENT",
+            "state"       => "COMPLETED"
           },
           {
             "id"          => "tx-2",
@@ -43,7 +44,8 @@ class RevolutNormalizerTest < Minitest::Test
             "amount"      => 50_000,
             "currency"    => "EUR",
             "description" => "Bank Transfer",
-            "type"        => "TRANSFER"
+            "type"        => "TRANSFER",
+            "state"       => "COMPLETED"
           }
         ]
       }
@@ -162,9 +164,9 @@ class RevolutNormalizerTest < Minitest::Test
       "vaults" => [],
       "pocket_transactions" => {
         "p1" => [
-          { "id" => "tx-ok", "startedDate" => 1_710_504_000_000, "amount" => -500, "currency" => "EUR", "description" => "Valid" },
-          { "id" => "tx-nil", "startedDate" => 1_710_504_000_000, "amount" => nil, "description" => "No amount" },
-          { "id" => "tx-zero", "startedDate" => 1_710_504_000_000, "amount" => 0, "description" => "Zero" }
+          { "id" => "tx-ok", "startedDate" => 1_710_504_000_000, "amount" => -500, "currency" => "EUR", "description" => "Valid", "state" => "COMPLETED" },
+          { "id" => "tx-nil", "startedDate" => 1_710_504_000_000, "amount" => nil, "description" => "No amount", "state" => "COMPLETED" },
+          { "id" => "tx-zero", "startedDate" => 1_710_504_000_000, "amount" => 0, "description" => "Zero", "state" => "COMPLETED" }
         ]
       }
     }
@@ -183,7 +185,7 @@ class RevolutNormalizerTest < Minitest::Test
       "vaults" => [],
       "pocket_transactions" => {
         "p1" => [
-          { "id" => "tx-iso", "startedDate" => "2024-03-15T10:00:00.000Z", "amount" => -100, "currency" => "EUR", "description" => "Test" }
+          { "id" => "tx-iso", "startedDate" => "2024-03-15T10:00:00.000Z", "amount" => -100, "currency" => "EUR", "description" => "Test", "state" => "COMPLETED" }
         ]
       }
     }
@@ -226,14 +228,16 @@ class RevolutNormalizerTest < Minitest::Test
             "amount"      => -5086,
             "currency"    => "EUR",
             "description" => "To EUR",
-            "type"        => "TRANSFER" },
+            "type"        => "TRANSFER",
+            "state"       => "COMPLETED" },
           { "id"          => transfer_id,
             "legId"       => "7c90ac30-5c9f-4dd8-0001-9f48390a65b8",
             "startedDate" => 1_536_105_600_000,
             "amount"      => 5086,
             "currency"    => "EUR",
             "description" => "From EUR Experimento 1",
-            "type"        => "TRANSFER" }
+            "type"        => "TRANSFER",
+            "state"       => "COMPLETED" }
         ]
       }
     }
@@ -265,7 +269,8 @@ class RevolutNormalizerTest < Minitest::Test
             "amount"      => -100,
             "currency"    => "EUR",
             "description" => "x",
-            "type"        => "CARD_PAYMENT" }
+            "type"        => "CARD_PAYMENT",
+            "state"       => "COMPLETED" }
         ]
       }
     }
@@ -301,15 +306,18 @@ class RevolutNormalizerTest < Minitest::Test
         "p-main" => [
           { "id" => "tr-1", "legId" => "tr-1-debit", "amount" => -1234,
             "startedDate" => 1_710_504_000_000, "currency" => "EUR",
-            "description" => "Coffee", "type" => "CARD_PAYMENT" },
+            "description" => "Coffee", "type" => "CARD_PAYMENT",
+            "state" => "COMPLETED" },
           { "id" => "tr-2", "legId" => "tr-2-credit", "amount" => 50_000,
             "startedDate" => 1_710_417_600_000, "currency" => "EUR",
-            "description" => "Bank Transfer", "type" => "TRANSFER" }
+            "description" => "Bank Transfer", "type" => "TRANSFER",
+            "state" => "COMPLETED" }
         ],
         "p-saved" => [
           { "id" => "tr-3", "legId" => "tr-3-debit", "amount" => -100,
             "startedDate" => 1_710_504_000_000, "currency" => "EUR",
-            "description" => "Vault top-up", "type" => "TRANSFER" }
+            "description" => "Vault top-up", "type" => "TRANSFER",
+            "state" => "COMPLETED" }
         ]
       }
     }
@@ -321,6 +329,62 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal a.accounts.map(&:id),     b.accounts.map(&:id)
     assert_equal a.transactions.map(&:id), b.transactions.map(&:id)
     assert_equal a.liabilities.map(&:id),  b.liabilities.map(&:id)
+  end
+
+  # Revolut returns the full event log per posting, not just the
+  # money-moving leg: a successful CARD_PAYMENT may be preceded by
+  # DECLINED authorization retries; reversed transfers leave a REVERTED
+  # leg; failed top-ups stay as FAILED. The canonical layer preserves
+  # them all with a status that mirrors Revolut's verdict — SimpleFIN
+  # serving downstream then filters non-posted/pending statuses before
+  # exposing to clients. See
+  # simplefreen/reports/simplefreen-dup-r3-post-fix.md for the
+  # incident write-up and per-state counts from a live capture.
+  def test_maps_state_to_canonical_status
+    raw = {
+      "wallet"  => {},
+      "pockets" => [{ "id" => "p1", "currency" => "EUR", "balance" => 0 }],
+      "bank_details" => [],
+      "vaults" => [],
+      "pocket_transactions" => {
+        "p1" => [
+          { "id" => "ok",       "startedDate" => 1_710_504_000_000, "amount" => -100, "currency" => "EUR", "description" => "x", "state" => "COMPLETED" },
+          { "id" => "pending",  "startedDate" => 1_710_504_000_000, "amount" => -100, "currency" => "EUR", "description" => "x", "state" => "PENDING" },
+          { "id" => "declined", "startedDate" => 1_710_504_000_000, "amount" => -100, "currency" => "EUR", "description" => "x", "state" => "DECLINED" },
+          { "id" => "failed",   "startedDate" => 1_710_504_000_000, "amount" => -100, "currency" => "EUR", "description" => "x", "state" => "FAILED" },
+          { "id" => "reverted", "startedDate" => 1_710_504_000_000, "amount" => -100, "currency" => "EUR", "description" => "x", "state" => "REVERTED" }
+        ]
+      }
+    }
+    payload = normalizer.call(raw)
+    by_src = payload.transactions.each_with_object({}) { |t, h| h[t.source_id] = t.status }
+    assert_equal "posted",   by_src["ok"]
+    assert_equal "pending",  by_src["pending"]
+    assert_equal "declined", by_src["declined"]
+    assert_equal "failed",   by_src["failed"]
+    assert_equal "reverted", by_src["reverted"]
+  end
+
+  # Unknown future state name -> nil status (not a crash). The downstream
+  # SimpleFIN filter admits status in {"posted","pending",nil}, so an
+  # unknown state will leak through to clients as a posted-shaped tx
+  # until a mapping is added — surfacing the gap rather than silently
+  # dropping money-moving postings.
+  def test_unknown_state_maps_to_nil_status
+    raw = {
+      "wallet"  => {},
+      "pockets" => [{ "id" => "p1", "currency" => "EUR", "balance" => 0 }],
+      "bank_details" => [],
+      "vaults" => [],
+      "pocket_transactions" => {
+        "p1" => [
+          { "id" => "unknown", "startedDate" => 1_710_504_000_000, "amount" => -100, "currency" => "EUR", "description" => "x", "state" => "QUANTUM_SUPERPOSITION" }
+        ]
+      }
+    }
+    payload = normalizer.call(raw)
+    assert_equal 1, payload.transactions.size
+    assert_nil payload.transactions.first.status
   end
 
   def test_wire_format_money_string_no_cents

@@ -99,6 +99,26 @@ module Freentonic
 
         # --- Transactions ---------------------------------------------------
 
+        # Revolut returns the full event log per posting: a COMPLETED
+        # CARD_PAYMENT may be preceded by DECLINED authorization
+        # retries; reversed transfers leave a REVERTED leg; failed
+        # top-ups stay as FAILED. Only COMPLETED legs actually move
+        # money or appear on Revolut's own account-statement export —
+        # but the canonical layer preserves the full event log so
+        # downstream consumers (admin UI, reports, audit) can see
+        # rejected attempts. The status field carries the verdict;
+        # SimpleFIN serving filters non-posted statuses before exposing
+        # to clients. See
+        # simplefreen/reports/simplefreen-dup-r3-post-fix.md.
+        STATE_TO_STATUS = {
+          "COMPLETED" => Freentonic::Canonical::Transaction::POSTED,
+          "PENDING"   => Freentonic::Canonical::Transaction::PENDING,
+          "DECLINED"  => "declined",
+          "FAILED"    => "failed",
+          "REVERTED"  => "reverted"
+        }.freeze
+        private_constant :STATE_TO_STATUS
+
         def build_transaction(pocket, account, tx)
           # Source_id MUST be per-leg, not per-transfer. Revolut returns
           # internal transfers (TRANSFER, EXCHANGE, …) as a single
@@ -131,6 +151,7 @@ module Freentonic
             date:            date,
             description:     cleaned,
             raw_description: raw_description,
+            status:          STATE_TO_STATUS[tx["state"].to_s.upcase],
             merchant:        build_merchant(tx),
             metadata:        { "revolut" => tx }
           )
