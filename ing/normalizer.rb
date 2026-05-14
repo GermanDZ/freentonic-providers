@@ -161,8 +161,22 @@ module Freentonic
                              preferred_formats: ING_DATE_FORMATS)
           return nil unless date
 
-          raw_description = mv["description"].to_s
-          cleaned = (mv["description"] || mv["store"]).to_s.strip
+          # ING returns a top-line `description` ("Recibo ESCUELA NUEVA
+          # KEPLER, S.L.") and a sub-line `store` carrying per-line
+          # detail — the kid's name on a school fee, the meter number on
+          # a utility bill, the specific REFERENCIA/RECIBO on a SEPA
+          # debit. Two real postings on the same day for the same amount
+          # (typical "one fee per kid" case) share the top line but
+          # differ in `store`. Earlier versions kept only `description`,
+          # so legitimate twin postings collapsed to byte-identical
+          # canonical text and downstream SimpleFIN consumers couldn't
+          # tell them apart. Concatenate so the disambiguator reaches
+          # clients. See simplefreen/reports/simplefreen-dup-r3-post-fix.md
+          # for the incident this surfaced.
+          parts = [mv["description"], compact_whitespace(mv["store"])]
+                  .map { |s| s.to_s.strip }.reject(&:empty?)
+          raw_description = parts.join(" — ")
+          cleaned = raw_description
 
           Builder.build_transaction(
             account_id: account.id,
@@ -184,6 +198,11 @@ module Freentonic
 
         def ing_pending_status(mv)
           mv.dig("status", "description") == ING_PENDING_STATUS ? "pending" : "settled"
+        end
+
+        def compact_whitespace(str)
+          return nil if str.nil?
+          str.to_s.gsub(/\s+/, " ").strip
         end
 
       end
