@@ -102,7 +102,15 @@ module Freentonic
         def build_tarjeta(t)
           ppp = ppp_for(t)
           return nil unless ppp
-          balance_cents = extract_card_balance_cents(t)
+          # Outstanding is positive cents (limite - disponible). The
+          # canonical convention is that credit-card *account* balances
+          # are stored NEGATIVE — same orientation as ING's liability
+          # accounts (see ing/normalizer.rb#extract_balance), so a card
+          # with €200 owed appears as -200.00 to the user. The same
+          # outstanding figure is reused positively on the companion
+          # liability record where "amount owed" is the convention.
+          outstanding_cents = extract_card_balance_cents(t)
+          balance_cents     = outstanding_cents ? -outstanding_cents : nil
           portable_ref, portable_id = card_portable_keys(t)
 
           Builder.build_account(
