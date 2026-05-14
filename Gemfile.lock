@@ -1,7 +1,7 @@
 PATH
   remote: /Users/germandz/personal-code/freentonic
   specs:
-    freentonic (0.7.0)
+    freentonic (0.8.0)
 
 GEM
   remote: https://rubygems.org/
@@ -28,7 +28,7 @@ CHECKSUMS
   base64 (0.3.0) sha256=27337aeabad6ffae05c265c450490628ef3ebd4b67be58257393227588f5a97b
   bigdecimal (4.1.2) sha256=53d217666027eab4280346fba98e7d5b66baaae1b9c3c1c0ffe89d48188a3fbd
   csv (3.3.5) sha256=6e5134ac3383ef728b7f02725d9872934f523cb40b961479f69cf3afa6c8e73f
-  freentonic (0.7.0)
+  freentonic (0.8.0)
   minitest (5.27.0) sha256=2d3b17f8a36fe7801c1adcffdbc38233b938eb0b4966e97a6739055a45fa77d5
   rake (13.3.1) sha256=8c9e89d09f66a26a01264e7e3480ec0607f0c497a861ef16063604b1b08eb19c
 
