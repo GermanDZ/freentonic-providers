@@ -322,6 +322,60 @@ class IngNormalizerTest < Minitest::Test
     refute_equal payload.transactions[0].id, payload.transactions[1].id
   end
 
+  # Regression: ING returns a top-line `description` plus a sub-line
+  # `store` carrying per-line detail. When a real-world account has two
+  # legitimate same-day same-amount postings (typical "one school fee
+  # per kid" case), the canonical description used to keep only the top
+  # line, so the two rows collapsed to byte-identical text downstream
+  # and SimpleFIN consumers reported them as bridge dups. Both fields
+  # must survive concatenated. See
+  # simplefreen/reports/simplefreen-dup-r3-post-fix.md.
+  def test_store_subline_is_concatenated_into_description
+    a = asset_movement("uuid" => "mv-luca", "amount" => -172, "effectiveDate" => "04/05/2026",
+                       "description" => "Recibo ESCUELA NUEVA KEPLER, S.L.",
+                       "store" => "luca del zotto gonzalez mayo servicios: 172.00")
+    b = asset_movement("uuid" => "mv-lara", "amount" => -172, "effectiveDate" => "04/05/2026",
+                       "description" => "Recibo ESCUELA NUEVA KEPLER, S.L.",
+                       "store" => "lara del zotto gonzalez mayo servicios: 172.00")
+    payload = normalizer.call([asset_product("movements" => [a, b])])
+
+    descs = payload.transactions.map(&:description)
+    assert_equal 2, descs.uniq.size,
+      "two legitimate twin postings must produce distinct canonical descriptions"
+    assert(descs.any? { |d| d.include?("luca") }, "luca disambiguator must reach description")
+    assert(descs.any? { |d| d.include?("lara") }, "lara disambiguator must reach description")
+    # Top-line preserved
+    descs.each { |d| assert_includes d, "Recibo ESCUELA NUEVA KEPLER, S.L." }
+    # raw_description carries the same merged text (unmolested provider
+    # output, which on ING means description + store together)
+    payload.transactions.each { |t| assert_equal t.description, t.raw_description }
+  end
+
+  # Store text from ING can carry runs of whitespace used for column
+  # alignment in the bank's own UI ("REFERENCIA:    xxxx    RECIBO:    yyyy").
+  # Collapse to single spaces so canonical descriptions stay readable
+  # without losing the disambiguating tokens.
+  def test_store_whitespace_is_collapsed
+    mv = asset_movement(
+      "uuid" => "ayto-1", "amount" => -42, "effectiveDate" => "16/04/2026",
+      "description" => "Recibo AYUNTAMIENTO DE ALCOBENDAS (DEPORTES)",
+      "store" => " REFERENCIA: AB4905839                   RECIBO: 10196167 "
+    )
+    payload = normalizer.call([asset_product("movements" => [mv])])
+    desc = payload.transactions.first.description
+    refute_match(/\s{2,}/, desc, "no runs of whitespace inside description")
+    assert_includes desc, "REFERENCIA: AB4905839 RECIBO: 10196167"
+  end
+
+  # When `store` is absent the description is just the top line — no
+  # trailing separator, no empty join.
+  def test_missing_store_leaves_description_unchanged
+    mv = asset_movement("uuid" => "card-1", "amount" => -5,
+                        "description" => "Pago en STARBUCKS MADRID", "store" => nil)
+    payload = normalizer.call([asset_product("movements" => [mv])])
+    assert_equal "Pago en STARBUCKS MADRID", payload.transactions.first.description
+  end
+
   # --- filtering edge cases ---------------------------------------------
 
   def test_skips_debit_card_products
