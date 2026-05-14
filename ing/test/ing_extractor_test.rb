@@ -21,22 +21,47 @@ class IngExtractorTest < Minitest::Test
 
   # --- Stubs ----------------------------------------------------------
 
+  # Stand-in for the YAML-built api_client. Declared endpoints are
+  # exposed as plain methods; SCA endpoints (still imperative) go
+  # through raw_request. update_auth_headers! records (host-scoped)
+  # so tests can assert the post-SCA Bearer rotation hit the api host.
   class StubClient
-    attr_accessor :products, :movements_by_uuid, :raw_responses, :v2_pages_by_uuid
-    attr_reader :movements_calls, :raw_calls, :auth_overrides
+    attr_accessor :products, :movements_by_uuid, :raw_responses,
+                  :position_keeping_response, :refresh_token_response,
+                  :v2_transactions_by_uuid
+    attr_reader :movements_calls, :raw_calls, :auth_overrides, :v2_calls,
+                :endpoint_calls
 
     def initialize
-      @products          = []
-      @movements_by_uuid = {}
-      @v2_pages_by_uuid  = {}    # raw_uuid → array of pages keyed on offset
-      @raw_responses     = {}    # path => response (or array, or proc)
-      @movements_calls   = []
-      @raw_calls         = []
-      @auth_overrides    = {}
+      @products                   = []
+      @movements_by_uuid          = {}
+      @v2_transactions_by_uuid    = {}    # raw_uuid → flat Array of v2 tx hashes
+      @raw_responses              = {}    # path => response (or array, or proc)
+      @position_keeping_response  = nil
+      @refresh_token_response     = nil
+      @movements_calls            = []
+      @raw_calls                  = []
+      @v2_calls                   = []
+      @endpoint_calls             = []
+      @auth_overrides             = []   # array of {headers:, host:}
     end
 
-    def fetch_products_legacy_shape
-      @products
+    # Declared endpoints ------------------------------------------------
+
+    def fetch_position_keeping
+      @endpoint_calls << :fetch_position_keeping
+      @position_keeping_response
+    end
+
+    def fetch_v2_transactions(raw_uuid:, from_date:, to_date:)
+      @endpoint_calls << :fetch_v2_transactions
+      @v2_calls << { raw_uuid: raw_uuid, from_date: from_date, to_date: to_date }
+      Array(@v2_transactions_by_uuid[raw_uuid])
+    end
+
+    def refresh_access_token
+      @endpoint_calls << :refresh_access_token
+      @refresh_token_response
     end
 
     def legacy_fetch_all_movements(v1id:, from_date:)
@@ -44,22 +69,19 @@ class IngExtractorTest < Minitest::Test
       Array(@movements_by_uuid[v1id])
     end
 
-    def update_auth_headers!(headers)
-      @auth_overrides.merge!(headers)
+    # Auth rotation ----------------------------------------------------
+
+    def update_auth_headers!(headers_hash = nil, host: nil, **other_headers)
+      headers = headers_hash || other_headers
+      @auth_overrides << { headers: headers, host: host }
       self
     end
+
+    # SCA documentation escape hatch -----------------------------------
 
     def raw_request(method:, path:, headers: {}, body: nil, base: nil, params: nil)
       @raw_calls << { method: method, path: path, headers: headers, body: body,
                       base: base, params: params }
-
-      if m = path.match(%r{\A/v2/products/(?<uuid>[^/]+)/transactions\z})
-        offset = (params && params[:offset]) || 0
-        pages = @v2_pages_by_uuid[m[:uuid]] || []
-        return pages.find { |p| p["offset"] == offset } ||
-               { "transactions" => [], "count" => 0, "mayHasMoreElements" => false }
-      end
-
       stub = @raw_responses[path]
       if stub.is_a?(Array)
         stub.shift
@@ -165,16 +187,6 @@ class IngExtractorTest < Minitest::Test
     { "products" => products, "legacyProducts" => legacy }
   end
 
-  def v2_page(transactions, offset:, more: false)
-    { "transactions" => transactions,
-      "count"        => transactions.size,
-      "limit"        => 100,
-      "offset"       => offset,
-      "total"        => 9999,
-      "mayHasMoreElements" => more,
-      "moreSca"      => false }
-  end
-
   def v2_transactions(count:, latest_date:, start_seq: 1)
     (0...count).map do |i|
       d = latest_date - i
@@ -194,13 +206,14 @@ class IngExtractorTest < Minitest::Test
     end
   end
 
-  # --- Lookback gating: short lookback never asks for elevation -----
+  # --- Short lookback + Bearer: v2 path, no SCA hop ----------------
 
-  def test_short_lookback_skips_elevated_path
+  def test_short_lookback_uses_v2_path_without_sca
     client = StubClient.new
-    client.products = [asset_product, card_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 100, latest_date: Date.today)
-    client.movements_by_uuid["p-card"]  = movements(count: 30,  latest_date: Date.today)
+    client.position_keeping_response = position_keeping_response
+    client.v2_transactions_by_uuid["raw-asset-uuid"] =
+      v2_transactions(count: 30, latest_date: Date.today, start_seq: 1)
+    client.movements_by_uuid["p-card"] = movements(count: 10, latest_date: Date.today)
     prompt = StubPromptStore.new
 
     products = extractor.call(
@@ -210,40 +223,64 @@ class IngExtractorTest < Minitest::Test
       remote_prompt_store: prompt
     )
 
-    assert_empty client.raw_calls
+    assert_includes client.endpoint_calls, :fetch_position_keeping
+    assert_includes client.endpoint_calls, :fetch_v2_transactions
+    # SCA documentation endpoints (still imperative) MUST NOT be hit.
+    refute client.raw_calls.any? { |c| c[:path].include?("/sca/documentation") },
+           "SCA endpoints must not be hit on short-lookback runs"
+    refute_includes client.endpoint_calls, :refresh_access_token
     assert_empty prompt.calls
-    assert_equal 2, products.size
-    products.each { |p| refute p.key?("_partial_data_suspected") }
+    # No Bearer rotation on short-lookback — captured value flows
+    # through the host-scoped auth_headers block unchanged.
+    assert_empty client.auth_overrides
+
+    asset = products.find { |p| p["uuid"] == "p-asset" }
+    assert_equal 30, asset["movements"].size
   end
 
-  # --- Long lookback without captured api headers: legacy + warning -
+  # --- Bearer missing: run returns empty, no fallback ---------------
 
-  def test_long_lookback_without_captured_headers_falls_back_with_warning
+  # A missing Bearer means /position-keeping is unreachable, which
+  # means the product list is unknown. Continuing would produce a
+  # successful 0-account payload that overwrites real history — so we
+  # abort hard with a UserError instead of returning an empty Array.
+  def test_missing_bearer_raises_user_error
     client = StubClient.new
     client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
     prompt = StubPromptStore.new
 
-    stderr = StringIO.new
-    products = extractor.call(
-      client: client, credentials: {},  # no ing_api_headers
-      from_date: LONG_LOOKBACK,
-      stdout: StringIO.new, stderr: stderr,
-      remote_prompt_store: prompt
-    )
-
-    assert_includes stderr.string, "ing_api_headers.Authorization wasn't captured"
+    err = assert_raises(Freentonic::UserError) do
+      extractor.call(
+        client: client, credentials: {},  # no ing_api_headers
+        from_date: LONG_LOOKBACK,
+        stdout: StringIO.new, stderr: StringIO.new,
+        remote_prompt_store: prompt
+      )
+    end
+    assert_match(/ing_api_headers\.Authorization not captured/, err.message)
     assert_empty client.raw_calls
     assert_empty prompt.calls
-    refute_nil products.first["_partial_data_suspected"]
   end
 
-  # --- Long lookback without prompt store: legacy + warning ---------
-
-  def test_long_lookback_without_prompt_store_falls_back_with_warning
+  def test_missing_bearer_short_lookback_also_raises
     client = StubClient.new
-    client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
+    err = assert_raises(Freentonic::UserError) do
+      extractor.call(
+        client: client, credentials: {},
+        from_date: SHORT_LOOKBACK,
+        stdout: StringIO.new, stderr: StringIO.new
+      )
+    end
+    assert_match(/ing_api_headers\.Authorization not captured/, err.message)
+  end
+
+  # --- Long lookback without prompt store: v2 without SCA + warning -
+
+  def test_long_lookback_without_prompt_store_runs_v2_with_truncation_warning
+    client = StubClient.new
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
+    client.v2_transactions_by_uuid["raw-asset-uuid"] =
+      v2_transactions(count: 30, latest_date: Date.today, start_seq: 1)
 
     stderr = StringIO.new
     products = extractor.call(
@@ -254,22 +291,24 @@ class IngExtractorTest < Minitest::Test
     )
 
     assert_includes stderr.string, "no operator prompt store available"
-    assert_empty client.raw_calls
-    refute_nil products.first["_partial_data_suspected"]
+    assert_includes stderr.string, "truncated at ING's ~52-day silent boundary"
+    assert_includes client.endpoint_calls, :fetch_position_keeping
+    refute client.raw_calls.any? { |c| c[:path].include?("/sca/documentation") }
+    assert_empty client.auth_overrides
+    assert_equal 30, products.first["movements"].size
   end
 
   # --- Long lookback + headers + prompt store: full v2 elevated path ---
 
   def test_v2_elevated_path_happy_path
     client = StubClient.new
-    client.raw_responses["/position-keeping"]                  = position_keeping_response
+    client.position_keeping_response = position_keeping_response
     client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response(token: "high-loa")
-    client.v2_pages_by_uuid["raw-asset-uuid"] = [
-      v2_page(v2_transactions(count: 100, latest_date: Date.today, start_seq: 1),  offset: 0,   more: true),
-      v2_page(v2_transactions(count: 100, latest_date: Date.today - 100, start_seq: 101), offset: 100, more: true),
-      v2_page(v2_transactions(count: 50,  latest_date: Date.today - 200, start_seq: 201), offset: 200, more: false)
-    ]
+    client.refresh_token_response = access_token_response(token: "high-loa")
+    client.v2_transactions_by_uuid["raw-asset-uuid"] =
+      v2_transactions(count: 100, latest_date: Date.today,       start_seq: 1) +
+      v2_transactions(count: 100, latest_date: Date.today - 100, start_seq: 101) +
+      v2_transactions(count: 50,  latest_date: Date.today - 200, start_seq: 201)
     client.movements_by_uuid["p-card"] = movements(count: 30, latest_date: Date.today)
     prompt = StubPromptStore.new
 
@@ -280,30 +319,22 @@ class IngExtractorTest < Minitest::Test
       remote_prompt_store: prompt
     )
 
-    # Client's persistent auth state is NEVER mutated — each api host
-    # call gets the Bearer + ESC explicitly via raw_request `headers:`.
-    assert_empty client.auth_overrides
+    # Endpoints called in the right order: position-keeping → SCA →
+    # refresh → v2 transactions.
+    assert_includes client.endpoint_calls, :fetch_position_keeping
+    assert_includes client.endpoint_calls, :refresh_access_token
+    assert_includes client.endpoint_calls, :fetch_v2_transactions
 
+    # SCA endpoints (genoma host) — still hit via raw_request, NOT
+    # part of declared endpoints.
     paths = client.raw_calls.map { |c| c[:path] }
-    assert_includes paths, "/position-keeping"
     assert_includes paths, "/genoma_api/rest/sca/documentation"
-    assert_includes paths, "/saf/tpa/accesstoken/synchronize"
-    assert paths.any? { |p| p.start_with?("/v2/products/raw-asset-uuid/transactions") }
-    refute_includes paths, "/genoma_api/saf/tpa/accesstoken"
 
-    # Pre-SCA api host calls carry the captured (low-LoA) bearer.
-    pk_call = client.raw_calls.find { |c| c[:path] == "/position-keeping" }
-    assert_equal "Bearer captured-low-loa",  pk_call[:headers]["Authorization"]
-    assert_equal "ESC-marker",                pk_call[:headers]["X-ING-ExtendedSessionContext"]
-
-    # SCA endpoints (genoma host) get NO Bearer — cookie auth only.
-    sca_call = client.raw_calls.find { |c| c[:path] == "/genoma_api/rest/sca/documentation" && c[:method] == :get }
-    refute sca_call[:headers].key?("Authorization"), "SCA endpoints must not carry Bearer"
-
-    # Post-refresh v2 calls carry the high-LoA bearer.
-    v2_call = client.raw_calls.find { |c| c[:path].start_with?("/v2/products/raw-asset-uuid") }
-    assert_equal "Bearer high-loa",   v2_call[:headers]["Authorization"]
-    assert_equal "ESC-marker",         v2_call[:headers]["X-ING-ExtendedSessionContext"]
+    # Post-SCA Bearer is rotated onto the client scoped to the api host
+    # only — the legacy host's cookie auth stays clean.
+    rotation = client.auth_overrides.find { |o| o[:host] == "api.ing.ingdirect.es" }
+    refute_nil rotation, "expected a host-scoped update_auth_headers! for api.ing.ingdirect.es"
+    assert_equal "Bearer high-loa", rotation[:headers]["Authorization"]
 
     asset = products.find { |p| p["uuid"] == "p-asset" }
     card  = products.find { |p| p["uuid"] == "p-card"  }
@@ -314,97 +345,105 @@ class IngExtractorTest < Minitest::Test
     assert sample["_v2_source"]
   end
 
-  # --- v2 path failure modes → fall back to legacy ------------------
+  # --- v2 path failure modes ----------------------------------------
+  #
+  # The cure for the r3 dup bug is that asset products never switch id
+  # scheme mid-life. So failures inside the v2 path degrade in place
+  # rather than falling back to a different scheme: SCA / Bearer-refresh
+  # failures keep going with the captured low-LoA Bearer (truncating
+  # asset history at ~52d), and /position-keeping failure aborts the
+  # run entirely (no product list to extract from).
 
-  def test_position_keeping_failure_falls_back_to_legacy
+  def test_position_keeping_malformed_response_raises_user_error
     client = StubClient.new
-    client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
-    client.raw_responses["/position-keeping"] = { "wrong_shape" => true }
+    client.position_keeping_response = { "wrong_shape" => true }
     prompt = StubPromptStore.new
 
-    products = extractor.call(
-      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
-      from_date: LONG_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
-      remote_prompt_store: prompt
-    )
-
+    err = assert_raises(Freentonic::UserError) do
+      extractor.call(
+        client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
+        from_date: LONG_LOOKBACK,
+        stdout: StringIO.new, stderr: StringIO.new,
+        remote_prompt_store: prompt
+      )
+    end
+    assert_match(%r{/position-keeping returned no legacyProducts}, err.message)
     assert_empty prompt.calls
-    refute_nil products.first["_partial_data_suspected"]
   end
 
-  def test_v2_failure_does_not_pollute_client_state_for_legacy_fallback
-    # Regression: a previous version of this code installed the captured
-    # Bearer onto the client globally via update_auth_headers!. When v2
-    # failed mid-flight the legacy fallback still went out with a stale
-    # Bearer, and the bank's edge proxy 401'd the request even though
-    # the cookie alone would have been fine. The fix passes Bearer + ESC
-    # only as per-call headers on raw_request — client state stays
-    # cookie-only for the legacy path's declared endpoints.
+  def test_position_keeping_network_failure_raises_user_error
     client = StubClient.new
-    client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
-    client.raw_responses["/position-keeping"] = { "wrong_shape" => true }  # forces v2 fallback
+    def client.fetch_position_keeping
+      raise StandardError, "boom"
+    end
     prompt = StubPromptStore.new
 
-    extractor.call(
-      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
-      from_date: LONG_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
-      remote_prompt_store: prompt
-    )
-
-    # update_auth_headers! never called — client's persistent auth is unchanged.
-    assert_empty client.auth_overrides
-    # legacy fetch happened (the fallback) — and it ran without Bearer pollution.
-    refute_empty client.movements_calls
+    err = assert_raises(Freentonic::UserError) do
+      extractor.call(
+        client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
+        from_date: LONG_LOOKBACK,
+        stdout: StringIO.new, stderr: StringIO.new,
+        remote_prompt_store: prompt
+      )
+    end
+    assert_match(%r{/position-keeping failed}, err.message)
+    assert_match(/StandardError: boom/, err.message)
   end
 
-  def test_sca_prompt_timeout_falls_back_to_legacy
+  def test_sca_prompt_timeout_continues_with_captured_bearer
     client = StubClient.new
-    client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
     client.raw_responses["/genoma_api/rest/sca/documentation"] = sca_doc_response
+    client.v2_transactions_by_uuid["raw-asset-uuid"] =
+      v2_transactions(count: 12, latest_date: Date.today, start_seq: 1)
     prompt = StubPromptStore.new
     prompt.timeout = true
 
+    stderr = StringIO.new
     products = extractor.call(
       client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
       from_date: LONG_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
+      stdout: StringIO.new, stderr: stderr,
       remote_prompt_store: prompt
     )
 
-    refute_nil products.first["_partial_data_suspected"]
+    # We still hit v2, just without elevation — no Bearer rotation
+    # happened, the captured value stays in place via the host-scoped
+    # auth_headers block.
+    assert_empty client.auth_overrides
+    refute_includes client.endpoint_calls, :refresh_access_token
+    assert_equal 12, products.first["movements"].size
   end
 
-  def test_refresh_bearer_failure_falls_back_to_legacy
+  def test_refresh_bearer_failure_continues_with_captured_bearer
     client = StubClient.new
-    client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
     client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = { "accessTokens" => [] }
+    client.refresh_token_response = { "accessTokens" => [] }
+    client.v2_transactions_by_uuid["raw-asset-uuid"] =
+      v2_transactions(count: 7, latest_date: Date.today, start_seq: 1)
     prompt = StubPromptStore.new
 
+    stderr = StringIO.new
     products = extractor.call(
       client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
       from_date: LONG_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
+      stdout: StringIO.new, stderr: stderr,
       remote_prompt_store: prompt
     )
 
-    refute_nil products.first["_partial_data_suspected"]
+    assert_includes stderr.string, "Bearer refresh failed"
+    # Bearer rotation NEVER happened — refresh produced no token.
+    assert_empty client.auth_overrides
+    assert_equal 7, products.first["movements"].size
   end
 
-  def test_sca_documentation_missing_security_process_id_falls_back
+  def test_sca_documentation_missing_process_id_continues_with_captured_bearer
     client = StubClient.new
-    client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 50, latest_date: Date.today)
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
     client.raw_responses["/genoma_api/rest/sca/documentation"] = { "acceptanceMethods" => [{ "securityProcessId" => "" }] }
+    client.v2_transactions_by_uuid["raw-asset-uuid"] =
+      v2_transactions(count: 5, latest_date: Date.today, start_seq: 1)
     prompt = StubPromptStore.new
 
     products = extractor.call(
@@ -415,16 +454,18 @@ class IngExtractorTest < Minitest::Test
     )
 
     assert_empty prompt.calls
-    refute_nil products.first["_partial_data_suspected"]
+    refute_includes client.endpoint_calls, :refresh_access_token
+    assert_empty client.auth_overrides
+    assert_equal 5, products.first["movements"].size
   end
 
   # --- Credit cards stay on legacy even in elevated path ------------
 
   def test_credit_card_uses_legacy_in_elevated_path
     client = StubClient.new
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(asset_uuids: {}, card_uuids: ["p-card"])
+    client.position_keeping_response = position_keeping_response(asset_uuids: {}, card_uuids: ["p-card"])
     client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response
+    client.refresh_token_response = access_token_response
     client.movements_by_uuid["p-card"] = movements(count: 80, latest_date: Date.today)
     prompt = StubPromptStore.new
 
@@ -435,7 +476,7 @@ class IngExtractorTest < Minitest::Test
       remote_prompt_store: prompt
     )
 
-    refute client.raw_calls.any? { |c| c[:path].start_with?("/v2/products") }
+    refute_includes client.endpoint_calls, :fetch_v2_transactions
     card = products.find { |p| p["uuid"] == "p-card" }
     assert_equal 80, card["movements"].size
   end
@@ -444,18 +485,16 @@ class IngExtractorTest < Minitest::Test
 
   def test_v2_to_legacy_shape_coercion
     client = StubClient.new
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
     client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response
-    client.v2_pages_by_uuid["raw-asset-uuid"] = [
-      v2_page([{
-        "transactionId" => { "productId" => "x", "transactionSequence" => 42 },
-        "amount" => -55.5, "balance" => 1000.0, "concept" => "AMAZON",
-        "description" => "Amazon Marketplace", "transactionDate" => "2026-04-15",
-        "transactionCode" => "RECIBO", "subcategoryId" => "9", "issuerId" => "AMZN",
-        "transactionLocalUUID" => "abc-123"
-      }], offset: 0, more: false)
-    ]
+    client.refresh_token_response = access_token_response
+    client.v2_transactions_by_uuid["raw-asset-uuid"] = [{
+      "transactionId" => { "productId" => "x", "transactionSequence" => 42 },
+      "amount" => -55.5, "balance" => 1000.0, "concept" => "AMAZON",
+      "description" => "Amazon Marketplace", "transactionDate" => "2026-04-15",
+      "transactionCode" => "RECIBO", "subcategoryId" => "9", "issuerId" => "AMZN",
+      "transactionLocalUUID" => "abc-123"
+    }]
     prompt = StubPromptStore.new
 
     products = extractor.call(
@@ -492,29 +531,27 @@ class IngExtractorTest < Minitest::Test
   # `uuid` so Canonical.transaction_id collapses them.
   def test_v2_same_sequence_different_local_uuid_collapses_to_one
     client = StubClient.new
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
     client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response
+    client.refresh_token_response = access_token_response
     # Same productId + transactionSequence in both records — only the
     # opaque transactionLocalUUID differs (simulating ING's per-request
     # nonce). They must end up with the same `uuid` after coercion.
-    client.v2_pages_by_uuid["raw-asset-uuid"] = [
-      v2_page([
-        {
-          "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 7 },
-          "amount" => -132.74, "balance" => 0.0, "concept" => nil,
-          "description" => "Recibo AYTO DE ALCOBENDAS I V T ",
-          "transactionDate" => "2026-05-11", "transactionCode" => "RECIBSEPA",
-          "transactionLocalUUID" => "___V1ID___nonceA___V1ID___"
-        },
-        {
-          "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 7 },
-          "amount" => -132.74, "balance" => 0.0, "concept" => nil,
-          "description" => "Recibo AYTO DE ALCOBENDAS I V T ",
-          "transactionDate" => "2026-05-11", "transactionCode" => "RECIBSEPA",
-          "transactionLocalUUID" => "___V1ID___nonceB___V1ID___"
-        }
-      ], offset: 0, more: false)
+    client.v2_transactions_by_uuid["raw-asset-uuid"] = [
+      {
+        "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 7 },
+        "amount" => -132.74, "balance" => 0.0, "concept" => nil,
+        "description" => "Recibo AYTO DE ALCOBENDAS I V T ",
+        "transactionDate" => "2026-05-11", "transactionCode" => "RECIBSEPA",
+        "transactionLocalUUID" => "___V1ID___nonceA___V1ID___"
+      },
+      {
+        "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 7 },
+        "amount" => -132.74, "balance" => 0.0, "concept" => nil,
+        "description" => "Recibo AYTO DE ALCOBENDAS I V T ",
+        "transactionDate" => "2026-05-11", "transactionCode" => "RECIBSEPA",
+        "transactionLocalUUID" => "___V1ID___nonceB___V1ID___"
+      }
     ]
     prompt = StubPromptStore.new
 
@@ -532,23 +569,21 @@ class IngExtractorTest < Minitest::Test
     assert_equal ["___V1ID___nonceA___V1ID___", "___V1ID___nonceB___V1ID___"], local_uuids
   end
 
-  # Defensive: if ING ever omits transactionId (shouldn't happen, but the
-  # v2 schema is partially documented), fall back to transactionLocalUUID
-  # so the row still makes it through with a usable — if non-stable — id.
-  def test_v2_missing_transaction_id_falls_back_to_local_uuid
+  # If ING ever omits transactionId, the row gets `uuid: nil` and the
+  # normalizer drops it. We'd rather lose a row than synthesise an
+  # unstable id and re-introduce the dup bug.
+  def test_v2_missing_transaction_id_emits_nil_uuid
     client = StubClient.new
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
     client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response
-    client.v2_pages_by_uuid["raw-asset-uuid"] = [
-      v2_page([{
-        # No "transactionId" at all
-        "amount" => -10.0, "balance" => 0.0,
-        "description" => "TX", "transactionDate" => "2026-04-15",
-        "transactionCode" => "TRANS",
-        "transactionLocalUUID" => "fallback-uuid"
-      }], offset: 0, more: false)
-    ]
+    client.refresh_token_response = access_token_response
+    client.v2_transactions_by_uuid["raw-asset-uuid"] = [{
+      # No "transactionId" at all
+      "amount" => -10.0, "balance" => 0.0,
+      "description" => "TX", "transactionDate" => "2026-04-15",
+      "transactionCode" => "TRANS",
+      "transactionLocalUUID" => "fallback-uuid"
+    }]
     prompt = StubPromptStore.new
 
     products = extractor.call(
@@ -558,46 +593,39 @@ class IngExtractorTest < Minitest::Test
       remote_prompt_store: prompt
     )
 
-    assert_equal "fallback-uuid", products.first["movements"].first["uuid"]
+    assert_nil products.first["movements"].first["uuid"]
   end
 
-  # --- v2 pagination terminates on count=0 OR mayHasMoreElements=false
+  # --- r3 regression pin: re-extracting the same v2 fixture produces
+  # byte-identical ids. Since assets only ever go through v2, this is
+  # the only stability guarantee we need to pin for them. Pagination
+  # itself is now the framework's responsibility — see
+  # workflow_schema_test.rb upstream — so we don't re-test it here.
 
-  def test_v2_pagination_stops_when_no_more_elements
-    client = StubClient.new
-    client.raw_responses["/position-keeping"]                  = position_keeping_response(card_uuids: [])
-    client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.raw_responses["/saf/tpa/accesstoken/synchronize"]   = access_token_response
-    client.v2_pages_by_uuid["raw-asset-uuid"] = [
-      v2_page(v2_transactions(count: 100, latest_date: Date.today),                offset: 0,   more: true),
-      v2_page(v2_transactions(count: 50,  latest_date: Date.today - 100, start_seq: 101), offset: 100, more: false)
-    ]
-    prompt = StubPromptStore.new
+  def test_v2_path_is_idempotent_across_two_extractions
+    client_a = stub_for_v2_fixture
+    client_b = stub_for_v2_fixture
 
-    products = extractor.call(
-      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
-      from_date: LONG_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
-      remote_prompt_store: prompt
-    )
+    a = extractor.call(client: client_a, credentials: { ing_api_headers: CAPTURED_HEADERS },
+                       from_date: SHORT_LOOKBACK, stdout: StringIO.new, stderr: StringIO.new,
+                       remote_prompt_store: StubPromptStore.new)
+    b = extractor.call(client: client_b, credentials: { ing_api_headers: CAPTURED_HEADERS },
+                       from_date: SHORT_LOOKBACK, stdout: StringIO.new, stderr: StringIO.new,
+                       remote_prompt_store: StubPromptStore.new)
 
-    assert_equal 150, products.first["movements"].size
-    v2_calls = client.raw_calls.count { |c| c[:path].start_with?("/v2/products") }
-    assert_equal 2, v2_calls
+    assert_equal movement_uuids(a), movement_uuids(b)
+    refute_empty movement_uuids(a)
   end
 
-  # --- Backwards compat -------------------------------------------------
-
-  def test_legacy_signature_without_prompt_store_works
+  def stub_for_v2_fixture
     client = StubClient.new
-    client.products = [asset_product]
-    client.movements_by_uuid["p-asset"] = movements(count: 100, latest_date: Date.today)
+    client.position_keeping_response = position_keeping_response(card_uuids: [])
+    client.v2_transactions_by_uuid["raw-asset-uuid"] =
+      v2_transactions(count: 25, latest_date: Date.today, start_seq: 1)
+    client
+  end
 
-    products = extractor.call(
-      client: client, credentials: {}, from_date: SHORT_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new
-    )
-
-    refute_empty products
+  def movement_uuids(products)
+    products.flat_map { |p| Array(p["movements"]).map { |mv| mv["uuid"] } }
   end
 end

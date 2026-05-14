@@ -81,17 +81,33 @@ phases:
       prompt: "Enter the SMS code Fintonic sent to your phone: "
       timeout: 300
     # Submit. The /private/verify page renders a plain `<button>Entrar</button>`
-    # inside the first <section> — no explicit `type=submit`, no stable
-    # class (recorder marked it `needs_review` with nth-child path),
-    # and React enables it asynchronously after the SMS code is fully
-    # entered. We scope by `section` to avoid colliding with any other
-    # enabled button on the page (back, logout, cookie banner, etc.)
-    # and wait for the not-disabled state before clicking.
+    # inside `<div class="buttons mt20">` — no explicit `type=submit`,
+    # no stable class on the button itself, and React enables it
+    # asynchronously after the SMS code is fully accepted into state.
+    #
+    # A previous version used `section button:not([disabled])`. That
+    # selector matched the FIRST enabled button anywhere in the
+    # /private/verify <section> — which wraps the page's onboarding
+    # header containing always-enabled buttons (help icon, user
+    # avatar). The wait returned immediately on the header button,
+    # the click hit it instead of "Entrar", the verify form was
+    # never actually submitted, and Fintonic eventually bounced the
+    # session back to PIN with "código incorrecto" because no code
+    # ever reached the verify endpoint.
+    #
+    # Fix: scope by the form's `.buttons` container (one button only)
+    # AND target by visible text via click_text. Both layers of
+    # defense — anything that ever rearranges this page can break
+    # at most one of them.
     - action: wait_for_selector
-      selector: "section button:not([disabled])"
+      selector: "div.buttons button:not([disabled])"
+      timeout: 30
+    - action: click_text
+      role: button
+      text: "Entrar"
+      within: "div.buttons"
+      match: exact
       timeout: 10
-    - action: click
-      selector: "section button:not([disabled])"
     # After 2FA Fintonic redirects to the main private area; let
     # the network settle before post_login navigates away. (wait_url
     # would be satisfied immediately by /private/verify itself,

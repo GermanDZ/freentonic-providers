@@ -139,23 +139,41 @@ api_client:
     - elements
     - resultList
   date_format: "%d/%m/%Y"
+  # Two hosts with different auth scopes:
+  #   - ing.ingdirect.es        → legacy cookie-only endpoints (cards)
+  #   - api.ing.ingdirect.es    → v2 endpoints, additionally signed with
+  #     the JS-computed Bearer + ExtendedSessionContext captured by the
+  #     workflow's capture_outbound_request_headers step. The api host
+  #     edge rejects requests carrying a wrong-scope Bearer aimed at
+  #     the legacy host, so the Bearer MUST be host-scoped.
   auth_headers:
-    Cookie:            "{cookie}"
-    genoma-session-id: "{genoma_session_id}"
-    Content-Type:      "application/json"
-    Origin:            "https://ing.ingdirect.es"
-    Referer:           "https://ing.ingdirect.es/"
+    - headers:
+        Cookie:            "{cookie}"
+        genoma-session-id: "{genoma_session_id}"
+        Content-Type:      "application/json"
+        Origin:            "https://ing.ingdirect.es"
+        Referer:           "https://ing.ingdirect.es/"
+    - host: "api.ing.ingdirect.es"
+      headers:
+        # The two JS-computed values are plucked out of the
+        # ing_api_headers Hash credential via derived_credentials
+        # below — capture_outbound_request_headers emits one Hash
+        # per call but auth_header from: needs a scalar accessor.
+        Authorization:                "{ing_api_authorization}"
+        X-ING-ExtendedSessionContext: "{ing_api_esc}"
   derived_credentials:
     genoma_session_id:
       from: cookie
       regex: 'genoma-session-id=([^;]+)'
       capture: 1
+    ing_api_authorization:
+      from: ing_api_headers
+      key:  Authorization
+    ing_api_esc:
+      from: ing_api_headers
+      key:  X-ING-ExtendedSessionContext
   endpoints:
-    - name: fetch_products_legacy_shape
-      method: GET
-      path: "/genoma_api/rest/products"
-      response:
-        extract_batch: [products, elements]
+    # Cards — legacy host, cookie auth.
     - name: legacy_fetch_all_movements
       method: GET
       path: "/genoma_api/rest/products/{v1id}/movements"
@@ -165,6 +183,33 @@ api_client:
         offset:   "{offset}"
       pagination: offset
       limit: 100
+    # v2 product list — api host, Bearer auth.
+    - name: fetch_position_keeping
+      method: GET
+      base:   "https://api.ing.ingdirect.es"
+      path:   "/position-keeping"
+    # v2 transactions — api host, Bearer auth, ISO dates.
+    - name: fetch_v2_transactions
+      method: GET
+      base:   "https://api.ing.ingdirect.es"
+      path:   "/v2/products/{raw_uuid}/transactions"
+      params:
+        limit:     100
+        offset:    "{offset}"
+        fromDate:  "{from_date|iso}"
+        toDate:    "{to_date|iso}"
+        filterEru: false
+      pagination: offset
+      limit: 100
+      response:
+        extract_batch: [transactions]
+    # SCA refresh — api host. The SCA documentation endpoints stay
+    # imperative in the extractor (operator prompt is genuinely
+    # imperative); only the post-SCA Bearer-refresh is declarative.
+    - name: refresh_access_token
+      method: GET
+      base:   "https://api.ing.ingdirect.es"
+      path:   "/saf/tpa/accesstoken/synchronize"
 
 extract:
   ruby: ./extractor.rb
