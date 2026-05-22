@@ -140,12 +140,14 @@ api_client:
     - resultList
   date_format: "%d/%m/%Y"
   # Two hosts with different auth scopes:
-  #   - ing.ingdirect.es        → legacy cookie-only endpoints (cards)
-  #   - api.ing.ingdirect.es    → v2 endpoints, additionally signed with
-  #     the JS-computed Bearer + ExtendedSessionContext captured by the
-  #     workflow's capture_outbound_request_headers step. The api host
-  #     edge rejects requests carrying a wrong-scope Bearer aimed at
-  #     the legacy host, so the Bearer MUST be host-scoped.
+  #   - ing.ingdirect.es        → legacy cookie-only endpoints (SCA
+  #     documentation handshake; imperative, not declared here).
+  #   - api.ing.ingdirect.es    → v2 endpoints (assets + credit cards),
+  #     additionally signed with the JS-computed Bearer +
+  #     ExtendedSessionContext captured by the workflow's
+  #     capture_outbound_request_headers step. The api host edge rejects
+  #     requests carrying a wrong-scope Bearer aimed at the legacy host,
+  #     so the Bearer MUST be host-scoped.
   auth_headers:
     - headers:
         Cookie:            "{cookie}"
@@ -161,10 +163,29 @@ api_client:
         # per call but auth_header from: needs a scalar accessor.
         Authorization:                "{ing_api_authorization}"
         X-ING-ExtendedSessionContext: "{ing_api_esc}"
+        # CSRF echo. ING's API edge enforces CSRF on state-changing
+        # methods (the /v2/products/transactions/search POST is the
+        # first POST in our v2 path). When this header is absent on a
+        # POST, ING SILENTLY returns HTTP 200 with an empty
+        # transactions array — no 4xx, no error — and the bridge sees
+        # a successful-looking response carrying no data. Echo the
+        # XSRF-TOKEN cookie value as a header on every api-host
+        # request; GETs ignore it harmlessly.
+        X-XSRF-TOKEN:                 "{xsrf_token}"
   derived_credentials:
     genoma_session_id:
       from: cookie
       regex: 'genoma-session-id=([^;]+)'
+      capture: 1
+    # The bank's SPA reads XSRF-TOKEN from the cookie via JS and
+    # echoes it on outbound POSTs. The cookie is captured first by
+    # capture_cookie_header in capture_credentials, so this is the
+    # canonical source — pulling from the cookie rather than the
+    # ing_api_headers Hash (which is required: false and may be
+    # absent on some login paths) keeps the wiring robust.
+    xsrf_token:
+      from: cookie
+      regex: 'XSRF-TOKEN=([^;]+)'
       capture: 1
     ing_api_authorization:
       from: ing_api_headers
@@ -173,32 +194,50 @@ api_client:
       from: ing_api_headers
       key:  X-ING-ExtendedSessionContext
   endpoints:
-    # Cards — legacy host, cookie auth.
-    - name: legacy_fetch_all_movements
-      method: GET
-      path: "/genoma_api/rest/products/{v1id}/movements"
-      params:
-        fromDate: "{from_date|date}"
-        limit:    100
-        offset:   "{offset}"
-      pagination: offset
-      limit: 100
     # v2 product list — api host, Bearer auth.
     - name: fetch_position_keeping
       method: GET
       base:   "https://api.ing.ingdirect.es"
       path:   "/position-keeping"
-    # v2 transactions — api host, Bearer auth, ISO dates.
-    - name: fetch_v2_transactions
-      method: GET
+    # Unified transactions search — api host, Bearer auth, JSON body
+    # with an array of product UUIDs. Replaces the per-product
+    # /v2/products/{uuid}/transactions (assets) and
+    # /v2/products/credit-cards/{uuid}/extract (cards) endpoints with
+    # a single date-range-windowed call that handles both kinds.
+    #
+    # Why this is the right endpoint:
+    #  - Date range (fromDate/toDate) instead of mode= scoping — older
+    #    cleared CC postings are retrievable, and pending → cleared
+    #    status transitions are observable (the cleared row reappears
+    #    under the same transactionSequence).
+    #  - Same stable id (transactionId.transactionSequence) across all
+    #    product kinds → v2-seq:<productId>:<seq> dedupes naturally.
+    #  - Multi-product (uuids: [...]) lets a single POST cover the full
+    #    product list per page.
+    #
+    # Trade-offs accepted:
+    #  - `amount` arrives as a String here (vs Numeric from the
+    #    per-product endpoints); the extractor coerces in
+    #    coerce_v2_search_to_legacy_shape.
+    #  - The CC `status` hash ("Pendiente de liquidar") is not exposed
+    #    by /search — CC rows normalize as `settled` regardless of
+    #    lifecycle stage. Acceptable: the canonical-id stability fix
+    #    is what we needed; pending-status fidelity for CC rows is
+    #    cosmetic for our consumers.
+    #  - SCA elevation boundary is 90 days here (vs the ~52d silent
+    #    truncation of /v2/products/{uuid}/transactions); see
+    #    SCA_ELEVATION_LOOKBACK_DAYS in extractor.rb.
+    - name: fetch_v2_search
+      method: POST
       base:   "https://api.ing.ingdirect.es"
-      path:   "/v2/products/{raw_uuid}/transactions"
-      params:
-        limit:     100
-        offset:    "{offset}"
-        fromDate:  "{from_date|iso}"
-        toDate:    "{to_date|iso}"
-        filterEru: false
+      path:   "/v2/products/transactions/search"
+      json:
+        uuids:       "{uuids}"
+        fromDate:    "{from_date|iso}"
+        toDate:      "{to_date|iso}"
+        offset:      "{offset}"
+        limit:       100
+        withComment: false
       pagination: offset
       limit: 100
       response:
