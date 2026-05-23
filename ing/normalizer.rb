@@ -34,6 +34,8 @@ module Freentonic
             end
           end
 
+          transactions = collapse_pre_clearing_dups(transactions)
+
           Builder.payload(
             accounts:     accounts,
             transactions: transactions,
@@ -43,6 +45,38 @@ module Freentonic
         end
 
         private
+
+        # ING's /v2/products/transactions/search re-emits the same real
+        # posting under two `transactionSequence`s while it transitions
+        # from pre-clearing (terse description) to post-clearing
+        # (enriched description). Without collapse, every fetch overlapping
+        # that window produces two canonical transactions for one posting
+        # ("dup-class-2"). Drop the shorter row when the longer row's
+        # description (whitespace-normalized) starts with the shorter
+        # row's description verbatim — that's the pre-clearing terse form.
+        # Identical descriptions remain (real twins, e.g. two €80 fees to
+        # the same town hall on the same day). Descriptions that diverge
+        # mid-string remain (truly distinct postings on the same key).
+        def collapse_pre_clearing_dups(transactions)
+          transactions
+            .group_by { |t| [t.account_id, t.date, t.amount] }
+            .flat_map { |_, txs| collapse_one_group(txs) }
+        end
+
+        def collapse_one_group(txs)
+          return txs if txs.size <= 1
+
+          normalized = txs.map { |t| [t, compact_whitespace(t.description)] }
+          return txs if normalized.map(&:last).uniq.size == 1   # real twins
+
+          longest = normalized.max_by { |_, d| d.length }
+          others  = normalized - [longest]
+          if others.all? { |_, d| longest.last.start_with?(d) && d.length < longest.last.length }
+            [longest.first]
+          else
+            txs
+          end
+        end
 
         # ING issues one product per plastic card. We emit one canonical
         # Account per plastic so each plastic carries its own portable_ref
