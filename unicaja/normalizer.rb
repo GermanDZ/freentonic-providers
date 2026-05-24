@@ -10,8 +10,9 @@ module Freentonic
     module Unicaja
       class Normalizer < Freentonic::Providers::NormalizerBase
         provider!(__dir__)
-        # CONFIG, INSTITUTION, SCRAPER_VERSION, UNICAJA_DATE_FORMATS
-        # come from unicaja/config.yml. Builder, Helpers inherited.
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, BANK_CODE,
+        # UNICAJA_DATE_FORMATS, FIELD_ALIASES come from
+        # unicaja/config.yml. Builder, Helpers inherited.
 
         def call(raw, context: {})
           @cuenta_movements  = raw["cuenta_movements"] || {}
@@ -54,19 +55,17 @@ module Freentonic
 
         # --- Cuenta (checking) ------------------------------------------------
 
-        UNICAJA_BANK_CODE = "2103"
-
         def build_cuenta(c)
           ppp = ppp_for(c)
           return nil unless ppp
           balance_cents = extract_balance_cents(c)
-          iban = c["iban"] || c["IBAN"]
-          portable_ref, portable_id = account_portable_keys(iban)
+          iban = pick(:iban, c)
+          portable_ref, portable_id = Builder.spanish_iban_portable_keys(iban, bank_code: BANK_CODE)
 
           Builder.build_account(
             institution: INSTITUTION,
             source_id:   "cuenta:#{ppp}",
-            currency:    c["divisa"] || c["moneda"] || "EUR",
+            currency:    pick(:currency, c) || "EUR",
             name:        first_present(c["alias"], c["descripcion"], "Unicaja #{ppp}"),
             type:        "checking",
             iban:        iban,
@@ -84,19 +83,6 @@ module Freentonic
           )
         end
 
-        def account_portable_keys(iban)
-          return [nil, nil] unless iban && iban.length >= 18 && iban.start_with?("ES")
-          ref = "#{UNICAJA_BANK_CODE}:#{iban[-4, 4]}"
-          [ref, "bank:#{ref}"]
-        end
-
-        def card_portable_keys(t)
-          last4 = pan_last4(t["numtarjeta"] || t["numeroTarjeta"])
-          return [nil, nil] unless last4
-          ref = "#{UNICAJA_BANK_CODE}:#{last4}"
-          [ref, "card:#{ref}"]
-        end
-
         # --- Tarjeta (credit card) -------------------------------------------
 
         def build_tarjeta(t)
@@ -111,12 +97,14 @@ module Freentonic
           # liability record where "amount owed" is the convention.
           outstanding_cents = extract_card_balance_cents(t)
           balance_cents     = outstanding_cents ? -outstanding_cents : nil
-          portable_ref, portable_id = card_portable_keys(t)
+          portable_ref, portable_id = Builder.card_pan_portable_keys(
+            t["numtarjeta"] || t["numeroTarjeta"], bank_code: BANK_CODE
+          )
 
           Builder.build_account(
             institution: INSTITUTION,
             source_id:   "tarjeta:#{ppp}",
-            currency:    t["divisa"] || t["moneda"] || "EUR",
+            currency:    pick(:currency, t) || "EUR",
             name:        first_present(t["alias"], t["tipotarjeta"], "Unicaja card #{ppp}", t["descripcion"]),
             type:        "credit_card",
             iban:        nil,
@@ -202,16 +190,11 @@ module Freentonic
           amount_cents = extract_amount_cents(mv)
           return nil unless amount_cents && amount_cents != 0
 
-          date = parse_date(
-            mv["fechaOperacion"] || mv["fechaoper"] || mv["fechaValor"] ||
-              mv["fechavalor"] || mv["fecha"],
-            preferred_formats: UNICAJA_DATE_FORMATS
-          )
+          date = parse_date(pick(:date, mv), preferred_formats: UNICAJA_DATE_FORMATS)
           return nil unless date
 
-          raw_description = (mv["concepto"] || mv["descripcionOper"] || mv["descripcion"]).to_s
-          cleaned_desc = (mv["concepto"] || mv["nombreComercio"] || mv["descripcionOper"] ||
-                          mv["descripcion"]).to_s.strip
+          raw_description = pick(:description_raw, mv).to_s
+          cleaned_desc = pick(:description, mv).to_s.strip
 
           Builder.build_transaction(
             account_id:      account.id,
@@ -228,33 +211,33 @@ module Freentonic
         # --- Helpers ---------------------------------------------------------
 
         def ppp_for(product)
-          product["ppp"] || product["codigoProducto"] || product["id"]
+          pick(:ppp, product)
         end
 
+        # Stable id with a hash fallback when the bank emits no movement
+        # key at all. The hash uses the same logical fields the alias
+        # map declares — keep them in sync if a new endpoint surfaces
+        # additional spellings.
         def movement_id(mv)
-          mv["numMovimiento"] || mv["nummov"] || mv["idMovimiento"] ||
-            mv["referenciaUnica"] || mv["id"] || begin
-              parts = [
-                mv["fechaOperacion"] || mv["fechaoper"],
-                mv["importe"],
-                mv["concepto"] || mv["nombreComercio"]
-              ].map(&:to_s).join("|")
-              "h:#{Digest::SHA1.hexdigest(parts)[0, 16]}"
-            end
+          pick(:movement_id, mv) || begin
+            parts = [pick(:date, mv), mv["importe"], pick(:description, mv)]
+                    .map(&:to_s).join("|")
+            "h:#{Digest::SHA1.hexdigest(parts)[0, 16]}"
+          end
         end
 
         def extract_amount_cents(mv)
-          cents(mv["importe"] || mv["importeMovimiento"] || mv["cantidad"] || mv["amount"])
+          cents(pick(:raw_amount, mv))
         end
 
         def extract_currency(mv)
-          raw = mv["importe"] || mv["importeMovimiento"]
-          return raw["divisa"] || raw["moneda"] if raw.is_a?(Hash)
-          mv["divisa"] || mv["moneda"]
+          raw = pick(:raw_amount, mv)
+          return pick(:currency, raw) if raw.is_a?(Hash)
+          pick(:currency, mv)
         end
 
         def extract_balance_cents(p)
-          cents(p["saldo"] || p["saldoActual"] || p["saldoDisponible"] || p["balance"])
+          cents(pick(:balance, p))
         end
 
         # Card outstanding = limite - disponible (in cents).

@@ -9,8 +9,9 @@ module Freentonic
     module Revolut
       class Normalizer < Freentonic::Providers::NormalizerBase
         provider!(__dir__)
-        # CONFIG, INSTITUTION, SCRAPER_VERSION come from revolut/config.yml.
-        # Builder, Helpers inherited.
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, STATUS_MAP,
+        # FIELD_ALIASES come from revolut/config.yml. Builder, Helpers
+        # inherited.
 
         def call(raw, context: {})
           accounts, transactions = [], []
@@ -79,7 +80,7 @@ module Freentonic
           return nil unless vault_id
 
           currency = vault["currency"] || "EUR"
-          balance_cents = cents(vault["balance"] || vault["currentAmount"], already_minor: true)
+          balance_cents = cents(pick(:vault_balance, vault), already_minor: true)
 
           Builder.build_account(
             institution: INSTITUTION,
@@ -99,26 +100,6 @@ module Freentonic
 
         # --- Transactions ---------------------------------------------------
 
-        # Revolut returns the full event log per posting: a COMPLETED
-        # CARD_PAYMENT may be preceded by DECLINED authorization
-        # retries; reversed transfers leave a REVERTED leg; failed
-        # top-ups stay as FAILED. Only COMPLETED legs actually move
-        # money or appear on Revolut's own account-statement export —
-        # but the canonical layer preserves the full event log so
-        # downstream consumers (admin UI, reports, audit) can see
-        # rejected attempts. The status field carries the verdict;
-        # SimpleFIN serving filters non-posted statuses before exposing
-        # to clients. See
-        # simplefreen/reports/simplefreen-dup-r3-post-fix.md.
-        STATE_TO_STATUS = {
-          "COMPLETED" => Freentonic::Canonical::Transaction::POSTED,
-          "PENDING"   => Freentonic::Canonical::Transaction::PENDING,
-          "DECLINED"  => "declined",
-          "FAILED"    => "failed",
-          "REVERTED"  => "reverted"
-        }.freeze
-        private_constant :STATE_TO_STATUS
-
         def build_transaction(pocket, account, tx)
           # Source_id MUST be per-leg, not per-transfer. Revolut returns
           # internal transfers (TRANSFER, EXCHANGE, …) as a single
@@ -137,7 +118,7 @@ module Freentonic
           amount_cents = extract_amount_cents(tx)
           return nil unless amount_cents && amount_cents != 0
 
-          date = parse_date(tx["startedDate"] || tx["completedDate"] || tx["createdDate"])
+          date = parse_date(pick(:tx_date, tx))
           return nil unless date
 
           raw_description = tx["description"].to_s
@@ -151,7 +132,7 @@ module Freentonic
             date:            date,
             description:     cleaned,
             raw_description: raw_description,
-            status:          STATE_TO_STATUS[tx["state"].to_s.upcase],
+            status:          Builder.map_status_from(tx["state"], STATUS_MAP),
             merchant:        build_merchant(tx),
             metadata:        { "revolut" => tx }
           )

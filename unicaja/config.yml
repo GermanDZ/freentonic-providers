@@ -6,7 +6,28 @@
 institution: unicaja
 scraper_version: unicaja/0.2
 
+# Spanish CCC bank code (bytes 4..7 of an ES IBAN). Pinned here so the
+# normalizer derives both account-level and card-level portable_refs
+# off the same constant.
+bank_code: "2103"
+
 # Spanish-format dates dominate Unicaja's feed; hint Helpers#parse_date
 # so ambiguous DD/MM/YYYY strings aren't flipped.
 unicaja_date_formats:
   - "%d/%m/%Y"
+
+# Unicaja's two movements endpoints (standard /cuentas/movimientos and
+# extended /apis/externo/.../busqueda) return the same logical field
+# under different keys — frequently both casings, with and without
+# camelCase. Declare one alias chain per logical field; the normalizer
+# resolves via Helpers#pick(:logical_key, row).
+field_aliases:
+  ppp:             [ppp, codigoProducto, id]
+  iban:            [iban, IBAN]
+  currency:        [divisa, moneda]
+  balance:         [saldo, saldoActual, saldoDisponible, balance]
+  movement_id:     [numMovimiento, nummov, idMovimiento, referenciaUnica, id]
+  date:            [fechaOperacion, fechaoper, fechaValor, fechavalor, fecha]
+  raw_amount:      [importe, importeMovimiento, cantidad, amount]
+  description_raw: [concepto, descripcionOper, descripcion]
+  description:     [concepto, nombreComercio, descripcionOper, descripcion]
