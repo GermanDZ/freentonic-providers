@@ -227,11 +227,13 @@ api_client:
       response:
         extract_batch: [movimientos, listaMovimientos]
     # Extended-history endpoint — requires the session to be armed via
-    # pre_arm_history (OTP).  Returns paginated results; the extractor
-    # drives the cursor loop using masMovimientos from the raw response.
-    # No extract_batch: the extractor needs the full response to read
-    # masMovimientos for pagination cursors.
-    - name: fetch_account_movements_page
+    # pre_arm_history (OTP). Cursor-paginated declaratively: the loop
+    # sends indOperacion=I on the first call (no cursor) and indOperacion=P
+    # plus the saldoUltMov / numUltMov cursor on every continuation,
+    # reading both values out of the previous response's masMovimientos
+    # envelope. Stops when masMovimientos.indMasMovimientos != "S" or
+    # either cursor field is missing.
+    - name: fetch_extended_account_movements
       method: POST
       path: "/apis/externo/unicaja/banca-digital/cuentas/movimientos/busqueda"
       form:
@@ -242,6 +244,18 @@ api_client:
         tipologia:    "T"
         saldoUltMov:  "{saldo_ult_mov}"
         numUltMov:    "{num_ult_mov}"
+      pagination:
+        kind: cursor
+        initial_kwargs:  { ind_operacion: "I" }
+        continue_kwargs: { ind_operacion: "P" }
+        cursor_from_response:
+          saldo_ult_mov: masMovimientos.ultimoSaldo.cantidad
+          num_ult_mov:   masMovimientos.numUltimoMovimiento
+        continue_when:
+          response_path: masMovimientos.indMasMovimientos
+          equals: "S"
+      response:
+        extract_batch: [movimientos, listaMovimientos]
     - name: fetch_all_card_movements
       method: POST
       path: "/services/rest/api/tarjetas/movimientos/listadoMovimientos/v2"

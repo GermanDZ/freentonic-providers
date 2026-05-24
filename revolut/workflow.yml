@@ -125,13 +125,33 @@ api_client:
     - name: fetch_vaults
       method: GET
       path: "/user/current/money-boxes"
-    - name: fetch_transactions_page
+    # Cursor-paginated declaratively: initial cursor = now (ms), each
+    # continuation reads the cursor from the LAST row of the previous
+    # batch via the startedDate / completedDate / createdDate alias
+    # chain (coerced to ms), and stops when the cursor crosses below
+    # the caller-provided from_ms boundary. The cycle-detection
+    # backstop in the framework handles the "last row's timestamp >=
+    # the cursor we just sent" terminator that Revolut's API hits at
+    # the end of the feed.
+    - name: fetch_pocket_transactions
       method: GET
       path: "/user/current/transactions/last"
       params:
         count: 50
         internalPocketId: "{pocket_id}"
         to: "{to}"
+      pagination:
+        kind: cursor
+        initial_kwargs:
+          to: "{now_ms}"
+        cursor_from_last_row:
+          to:
+            fields: [startedDate, completedDate, createdDate]
+            coerce: timestamp_ms
+        continue_when:
+          cursor_gt: { field: to, value: "{from_ms}" }
+      response:
+        extract_batch: [transactions, items]
     - name: fetch_cashback
       method: GET
       path: "/cashback"

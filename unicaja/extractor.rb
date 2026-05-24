@@ -22,7 +22,6 @@ module Freentonic
         provider!(__dir__)
 
         RECENT_WINDOW_DAYS = 30
-        MAX_MOVEMENTS_SAFETY_CAP = 10_000
 
         def call(client:, credentials:, from_date:, stdout:, stderr:)
           stdout.puts "  Fetching cuentas..."
@@ -60,12 +59,10 @@ module Freentonic
             if extended
               stdout.puts "  Fetching extended history for cuenta #{ppp}..."
               old = safe_fetch(stderr, "extended fetch failed") {
-                o = fetch_extended_movements(
-                  client:    client,
-                  ppp:       ppp,
-                  from_date: from_date,
-                  to_date:   recent_from,
-                  stdout:    stdout
+                o = client.fetch_extended_account_movements(
+                  ppp:         ppp,
+                  fecha_desde: from_date.to_s,
+                  fecha_hasta: recent_from.to_s
                 )
                 stdout.puts "    -> #{o.size} movements (extended)"
                 o
@@ -112,66 +109,6 @@ module Freentonic
         end
 
         private
-
-        # Cursor-paginated fetch over the /apis/externo/.../busqueda endpoint.
-        # The endpoint returns the full JSON hash (no extract_batch) so we can
-        # read both `movimientos` and `masMovimientos`.
-        #
-        # Pagination cursors come from masMovimientos (NOT from the last row):
-        #   masMovimientos.numUltimoMovimiento  -> numUltMov
-        #   masMovimientos.ultimoSaldo.cantidad  -> saldoUltMov
-        #   masMovimientos.indMasMovimientos     -> "S" = more pages
-        #
-        # First request: indOperacion="I", no cursor params.
-        # Next requests: indOperacion="P" + cursor values from masMovimientos.
-        def fetch_extended_movements(client:, ppp:, from_date:, to_date:, stdout:)
-          all           = []
-          ind_operacion = "I"
-          saldo_ult_mov = nil
-          num_ult_mov   = nil
-
-          loop do
-            raw = client.fetch_account_movements_page(
-              ppp:           ppp,
-              ind_operacion: ind_operacion,
-              fecha_desde:   from_date.to_s,
-              fecha_hasta:   to_date.to_s,
-              saldo_ult_mov: saldo_ult_mov,
-              num_ult_mov:   num_ult_mov
-            )
-            break if raw.nil?
-
-            movimientos = extract_movimientos(raw)
-            break if movimientos.empty?
-
-            all.concat(movimientos)
-
-            if all.size >= MAX_MOVEMENTS_SAFETY_CAP
-              stdout.puts "    ! hit MAX_MOVEMENTS_SAFETY_CAP (#{MAX_MOVEMENTS_SAFETY_CAP}); stopping"
-              break
-            end
-
-            mas = raw["masMovimientos"]
-            stdout.puts "    -> fetched #{all.size} so far"
-            break unless mas && mas["indMasMovimientos"] == "S"
-
-            num_ult_mov   = mas["numUltimoMovimiento"]
-            saldo_ult_mov = mas.dig("ultimoSaldo", "cantidad")
-            if num_ult_mov.nil? || saldo_ult_mov.nil?
-              stdout.puts "    ! masMovimientos cursor incomplete; stopping"
-              break
-            end
-            ind_operacion = "P"
-          end
-
-          all
-        end
-
-        def extract_movimientos(raw)
-          return raw if raw.is_a?(Array)
-          return [] unless raw.is_a?(Hash)
-          raw["movimientos"] || raw["listaMovimientos"] || []
-        end
 
         # Merge extended (older) + recent movements, deduplicating by
         # numMovimiento when present.
