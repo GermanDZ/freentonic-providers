@@ -6,3 +6,22 @@
 
 institution: revolut
 scraper_version: revolut/0.2
+
+# Revolut emits the same logical field under different keys depending
+# on the entity (vault vs pocket) or the transaction lifecycle stage
+# (started vs completed). Declare alias chains so the normalizer
+# doesn't carry them inline.
+field_aliases:
+  vault_balance: [balance, currentAmount]
+  tx_date:       [startedDate, completedDate, createdDate]
+
+# Revolut returns the full event log per posting (COMPLETED, PENDING,
+# DECLINED authorization retries, REVERTED reversed transfers, FAILED
+# top-ups). The canonical layer preserves the full log; SimpleFIN
+# serving filters non-posted statuses before exposing to clients.
+status_map:
+  COMPLETED: posted
+  PENDING:   pending
+  DECLINED:  declined
+  FAILED:    failed
+  REVERTED:  reverted

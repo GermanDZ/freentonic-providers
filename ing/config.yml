@@ -8,13 +8,29 @@
 institution: ing
 scraper_version: ing/0.2
 
+# Spanish CCC bank code (bytes 4..7 of an ES IBAN). Pinned here so the
+# normalizer derives both account-level and card-level portable_refs
+# off the same constant — and so a future Spanish-bank provider only
+# needs to swap this value to inherit the same portable-key shape.
+bank_code: "1465"
+
 # Spanish-format dates dominate ING's feed; hint Helpers#parse_date so
 # DD/MM is not flipped for months ≤ 12.
 ing_date_formats:
   - "%d/%m/%Y"
 
-# Source-side status string indicating a movement is pending settlement.
-ing_pending_status: "Pendiente de liquidar"
+# Per-movement logical field aliases. The /search endpoint emits
+# `effectiveDate`; legacy per-product endpoints used `chargeDate`. Both
+# are DD/MM/YYYY strings already.
+field_aliases:
+  date: [effectiveDate, chargeDate]
+
+# Source-side status string → canonical status. Resolved via
+# Builder.map_status_from(mv.dig("status", "description"), STATUS_MAP).
+# "posted" / "pending" canonicalize to the Canonical::Transaction
+# constants; unknown raw values return nil (caller defaults to POSTED).
+status_map:
+  "Pendiente de liquidar": pending
 
 # Numeric ING product type → canonical kind. nil means "not balance-bearing"
 # and the product is dropped before reaching the canonical pipeline.

@@ -10,9 +10,10 @@ module Freentonic
     module Ing
       class Normalizer < Freentonic::Providers::NormalizerBase
         provider!(__dir__)
-        # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_PRODUCT_TYPE,
-        # ING_DATE_FORMATS, ING_PENDING_STATUS all come from
-        # ing/config.yml. Builder, Helpers inherited.
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, BANK_CODE,
+        # KIND_BY_PRODUCT_TYPE, ING_DATE_FORMATS, STATUS_MAP,
+        # FIELD_ALIASES all come from ing/config.yml. Builder, Helpers
+        # inherited.
 
         def call(raw, context: {})
           accounts, liabilities, transactions = [], [], []
@@ -88,7 +89,6 @@ module Freentonic
         # plastic-level) gets emitted on every plastic and the consolidation
         # layer in simplefreen is responsible for de-duplicating once
         # auto-link fires across the per-plastic Accounts that share a line.
-        ING_BANK_CODE = "1465"
 
         def build_account(product, kind)
           uuid = product["uuid"]
@@ -98,9 +98,9 @@ module Freentonic
 
           portable_ref, portable_id =
             if kind == "liability"
-              card_portable_keys(product["productNumber"])
+              Builder.card_pan_portable_keys(product["productNumber"], bank_code: BANK_CODE)
             else
-              account_portable_keys(iban)
+              Builder.spanish_iban_portable_keys(iban, bank_code: BANK_CODE)
             end
 
           Builder.build_account(
@@ -120,28 +120,6 @@ module Freentonic
               "partial_data_suspected"  => product["_partial_data_suspected"]
             }.compact
           )
-        end
-
-        # Spanish IBAN: ES kk BBBB GGGG DD CCCCCCCCCC
-        # CCC bank code = bytes 4..7. ING's is always 1465; pinning it
-        # explicitly keeps the portable_ref shape consistent with the
-        # cards (which have no IBAN to derive the bank code from).
-        def account_portable_keys(iban)
-          return [nil, nil] unless iban && iban.length >= 18 && iban.start_with?("ES")
-          ref = "#{ING_BANK_CODE}:#{iban[-4, 4]}"
-          [ref, "bank:#{ref}"]
-        end
-
-        # Cards have no IBAN. productNumber carries the plastic's full PAN
-        # (16 digits in real data, e.g. 4174804472951087); pan_last4 strips
-        # it to BANKID:LAST4. Returns [nil, nil] when productNumber is
-        # missing or has fewer than 4 digits — the legacy (institution,
-        # source_id) derivation kicks in via Canonical.account_id.
-        def card_portable_keys(product_number)
-          last4 = pan_last4(product_number)
-          return [nil, nil] unless last4
-          ref = "#{ING_BANK_CODE}:#{last4}"
-          [ref, "card:#{ref}"]
         end
 
         # Asset products carry a top-level numeric `balance` (the cleared
@@ -191,8 +169,7 @@ module Freentonic
           amount = mv["amount"]
           return nil unless amount.is_a?(Numeric) && amount != 0
 
-          date = parse_date(mv["effectiveDate"] || mv["chargeDate"],
-                             preferred_formats: ING_DATE_FORMATS)
+          date = parse_date(pick(:date, mv), preferred_formats: ING_DATE_FORMATS)
           return nil unless date
 
           # ING returns a top-line `description` ("Recibo ESCUELA NUEVA
@@ -221,17 +198,14 @@ module Freentonic
             value_date: parse_date(mv["clearingDate"], preferred_formats: ING_DATE_FORMATS),
             description:     cleaned,
             raw_description: raw_description,
-            status:     Builder.map_status(ing_pending_status(mv)),
+            status:     Builder.map_status_from(mv.dig("status", "description"), STATUS_MAP) ||
+                        Freentonic::Canonical::Transaction::POSTED,
             metadata:   { "ing" => extract_fields(mv, RAW_FIELDS_MOVEMENT) }
           )
         end
 
         def pick_name(product)
           first_present(product["alias"], product["name"]) || "ING"
-        end
-
-        def ing_pending_status(mv)
-          mv.dig("status", "description") == ING_PENDING_STATUS ? "pending" : "settled"
         end
 
         def compact_whitespace(str)

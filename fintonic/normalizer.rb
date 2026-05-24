@@ -9,8 +9,9 @@ module Freentonic
     module Fintonic
       class Normalizer < Freentonic::Providers::NormalizerBase
         provider!(__dir__)
-        # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_TYPE all
-        # come from fintonic/config.yml. Builder, Helpers inherited.
+        # CONFIG, INSTITUTION, SCRAPER_VERSION, KIND_BY_TYPE,
+        # FIELD_ALIASES all come from fintonic/config.yml. Builder,
+        # Helpers inherited.
 
         def call(raw, context: {})
           category_map = build_category_map(raw["categoryTree"] || {})
@@ -129,7 +130,7 @@ module Freentonic
           # `userDate` is preserved in metadata.fintonic.userDate for
           # any downstream consumer that wants to expose the
           # user-chosen date.
-          date = parse_date(tx["operationDate"] || tx["valueDate"] || tx["userDate"])
+          date = parse_date(pick(:date, tx))
           return nil unless date
 
           category_id   = resolve_category_id(tx)
@@ -169,8 +170,8 @@ module Freentonic
         end
 
         def compose_description(tx)
-          main = tx["description"] || tx["cleanNote"] || tx["primaryDisplay"]
-          user_desc = tx["userDescription"] || tx["cleanUserDescription"]
+          main = pick(:description, tx)
+          user_desc = pick(:user_description, tx)
           if user_desc && !user_desc.to_s.strip.empty?
             [main, user_desc].compact.reject { |s| s.to_s.strip.empty? }.join(" | ")
           else

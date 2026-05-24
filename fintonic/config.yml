@@ -7,6 +7,15 @@
 institution: fintonic
 scraper_version: fintonic/0.2
 
+# Per-transaction logical field aliases. operationDate is the bank-side
+# date; userDate is the user-edited date inside Fintonic — see
+# build_transaction's comment for why we prefer the former for the
+# canonical date but preserve userDate in metadata.
+field_aliases:
+  date:             [operationDate, valueDate, userDate]
+  description:      [description, cleanNote, primaryDisplay]
+  user_description: [userDescription, cleanUserDescription]
+
 # Fintonic product type string → canonical kind.
 kind_by_type:
   ACCOUNT:     asset
