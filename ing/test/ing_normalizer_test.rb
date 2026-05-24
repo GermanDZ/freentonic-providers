@@ -396,6 +396,139 @@ class IngNormalizerTest < Minitest::Test
     assert_empty payload.transactions
   end
 
+  # --- pre-clearing dup collapse (dup-class-2) --------------------------
+  #
+  # ING's /v2/products/transactions/search re-emits the same real posting
+  # under two transactionSequence ids during the pre-/post-clearing
+  # window: a terse pre-clearing row ("WWW.AMAZON") and an enriched
+  # post-clearing row ("WWW.AMAZON*NO3CS7J44 LUXEMBOURG"). Without
+  # collapse, each fetch over that window writes two canonical txns for
+  # one posting. The shorter row must be dropped when the longer row's
+  # description starts with the shorter verbatim (after whitespace
+  # normalization).
+
+  def test_pre_clearing_dup_terse_vs_enriched_is_collapsed
+    terse = asset_movement(
+      "uuid" => "mv-amazon-pending", "amount" => -26.38,
+      "effectiveDate" => "21/05/2026", "description" => "WWW.AMAZON"
+    )
+    enriched = asset_movement(
+      "uuid" => "mv-amazon-cleared", "amount" => -26.38,
+      "effectiveDate" => "21/05/2026",
+      "description" => "WWW.AMAZON*NO3CS7J44           LUXEMBOURG"
+    )
+    payload = normalizer.call([asset_product("movements" => [terse, enriched])])
+
+    assert_equal 1, payload.transactions.size,
+      "terse pre-clearing row must be collapsed into the enriched row"
+    surviving = payload.transactions.first
+    assert_includes surviving.description, "LUXEMBOURG",
+      "the enriched row must be the one kept"
+    assert_equal "mv-amazon-cleared", surviving.source_id
+  end
+
+  def test_pre_clearing_dup_collapses_on_whitespace_only_difference
+    # Prusa case from production: same merchant text padded with runs of
+    # spaces in the enriched row. After whitespace collapse, the terse row
+    # is a strict prefix.
+    terse = asset_movement(
+      "uuid" => "mv-prusa-pending", "amount" => -1331.47,
+      "effectiveDate" => "21/05/2026", "description" => "Prusa Research"
+    )
+    enriched = asset_movement(
+      "uuid" => "mv-prusa-cleared", "amount" => -1331.47,
+      "effectiveDate" => "21/05/2026",
+      "description" => "Prusa Research                 Prague"
+    )
+    payload = normalizer.call([asset_product("movements" => [terse, enriched])])
+
+    assert_equal 1, payload.transactions.size
+    assert_equal "mv-prusa-cleared", payload.transactions.first.source_id
+  end
+
+  def test_real_twin_postings_with_identical_description_are_kept
+    # Two legitimate €80 fees to the same town hall on the same day —
+    # different physical postings, same description after normalization.
+    a = asset_movement("uuid" => "mv-twin-a", "amount" => -80,
+                       "effectiveDate" => "20/05/2026",
+                       "description" => "AYUNTAMIENTO DE ALCOBENDA ALCOBENDAS")
+    b = asset_movement("uuid" => "mv-twin-b", "amount" => -80,
+                       "effectiveDate" => "20/05/2026",
+                       "description" => "AYUNTAMIENTO DE ALCOBENDA ALCOBENDAS")
+    payload = normalizer.call([asset_product("movements" => [a, b])])
+
+    assert_equal 2, payload.transactions.size,
+      "real twins with identical descriptions must both be preserved"
+  end
+
+  def test_distinct_postings_sharing_date_and_amount_are_kept
+    # Same (account, date, amount) by coincidence — different merchants.
+    # Neither description is a prefix of the other, so both survive.
+    a = asset_movement("uuid" => "mv-cafe", "amount" => -60,
+                       "effectiveDate" => "29/11/2024",
+                       "description" => "CAFE DE SAN MILLAN SEGOVIA")
+    b = asset_movement("uuid" => "mv-petro", "amount" => -60,
+                       "effectiveDate" => "29/11/2024",
+                       "description" => "PETROPRIX ALCOBENDAS ALCOBENDAS")
+    payload = normalizer.call([asset_product("movements" => [a, b])])
+
+    assert_equal 2, payload.transactions.size
+  end
+
+  def test_real_twins_with_store_disambiguator_are_kept
+    # Regression interaction with the existing description+store concat
+    # logic: Escuela Kepler bills the same amount for two kids on the
+    # same day; concatenated descriptions differ ("luca…" vs "lara…"),
+    # so the prefix-collapse path must NOT touch them.
+    a = asset_movement("uuid" => "mv-luca", "amount" => -680,
+                       "effectiveDate" => "04/05/2026",
+                       "description" => "Recibo ESCUELA NUEVA KEPLER, S.L.",
+                       "store" => "luca del zotto gonzalez mayo: 680.00")
+    b = asset_movement("uuid" => "mv-lara", "amount" => -680,
+                       "effectiveDate" => "04/05/2026",
+                       "description" => "Recibo ESCUELA NUEVA KEPLER, S.L.",
+                       "store" => "lara del zotto gonzalez mayo: 680.00")
+    payload = normalizer.call([asset_product("movements" => [a, b])])
+
+    assert_equal 2, payload.transactions.size,
+      "twin postings disambiguated only by `store` must survive collapse"
+  end
+
+  def test_three_way_group_with_unrelated_posting_keeps_all
+    # Defensive: if a phantom terse + enriched pair coincides on
+    # (date, amount) with a third unrelated posting, the algorithm
+    # currently keeps all three. Trade-off: avoid over-collapsing real
+    # postings at the cost of leaving rare three-way phantom-mixed
+    # groups in canonical. Documented behavior — pin it.
+    terse = asset_movement("uuid" => "mv-amzn-terse", "amount" => -26.38,
+                           "effectiveDate" => "21/05/2026", "description" => "WWW.AMAZON")
+    enriched = asset_movement("uuid" => "mv-amzn-cleared", "amount" => -26.38,
+                              "effectiveDate" => "21/05/2026",
+                              "description" => "WWW.AMAZON*NO3CS7J44 LUXEMBOURG")
+    unrelated = asset_movement("uuid" => "mv-other", "amount" => -26.38,
+                               "effectiveDate" => "21/05/2026",
+                               "description" => "WWW.AMAZON GIFT CARD")
+    payload = normalizer.call([asset_product("movements" => [terse, enriched, unrelated])])
+
+    assert_equal 3, payload.transactions.size,
+      "mixed group must be left for manual review rather than collapsed"
+  end
+
+  def test_collapse_does_not_cross_accounts
+    # Same date + amount + description on two different accounts must
+    # produce two transactions — collapse is scoped per account.
+    mv = asset_movement("uuid" => "mv-shared", "amount" => -10.0,
+                        "effectiveDate" => "15/03/2024",
+                        "description" => "STARBUCKS MADRID")
+    payload = normalizer.call([
+      asset_product("uuid" => "prod-a", "iban" => "ES59 1465 0100 9817 1439 1272",
+                    "movements" => [mv.merge("uuid" => "mv-a")]),
+      asset_product("uuid" => "prod-b", "iban" => "ES59 1465 0100 9817 1439 7251",
+                    "movements" => [mv.merge("uuid" => "mv-b")])
+    ])
+    assert_equal 2, payload.transactions.size
+  end
+
   def test_wire_format_money_is_string_no_cents_keys
     payload = normalizer.call([asset_product("movements" => [asset_movement])])
     wire = payload.to_h
