@@ -117,13 +117,14 @@ class IngNormalizerTest < Minitest::Test
     assert_equal "cc-1",        liab.source_id
   end
 
-  def test_credit_card_balance_is_outstanding_negated
-    # creditLimit 6500 - availableBalance 4317.19 = 2182.81 outstanding,
-    # stored as a negative number (it's a liability — money owed).
+  def test_credit_card_balance_falls_back_to_line_outstanding_when_no_per_card_data
+    # No monthPurchasesAmount on the (sole) plastic: it is the line carrier,
+    # so it absorbs the full line outstanding (creditLimit 6500 -
+    # availableBalance 4317.19 = 2182.81), negated (money owed).
     payload = normalizer.call([credit_card_product])
     acct = payload.accounts.first
     assert_equal BigDecimal("-2182.81"), acct.balance.current
-    assert_equal "ing_live:credit_limit_minus_available", acct.metadata["balance_source"]
+    assert_equal "ing_live:line_outstanding", acct.metadata["balance_source"]
   end
 
   def test_credit_card_with_no_outstanding_is_zero
@@ -131,7 +132,7 @@ class IngNormalizerTest < Minitest::Test
                                                    "availableBalance" => 1485.0)])
     acct = payload.accounts.first
     assert_equal BigDecimal("0"), acct.balance.current
-    assert_equal "ing_live:credit_limit_minus_available", acct.metadata["balance_source"]
+    assert_equal "ing_live:card_purchases", acct.metadata["balance_source"]
   end
 
   def test_credit_card_without_limit_or_available_has_nil_balance
@@ -168,17 +169,66 @@ class IngNormalizerTest < Minitest::Test
     assert_equal 2, payload.transactions.size
   end
 
-  def test_plastics_on_shared_line_each_carry_line_level_balance
-    # creditLimit/availableBalance are line-level on ING's API. Per-plastic
-    # balance isn't available, so every plastic on a shared line emits the
-    # same outstanding figure — simplefreen's consolidation layer dedups
-    # once auto-link merges them under a single external card concept.
-    plastic_1 = credit_card_product("uuid" => "p1", "productNumber" => "4174804472951087")
-    plastic_2 = credit_card_product("uuid" => "p2", "productNumber" => "4174804472951095")
-    payload = normalizer.call([plastic_1, plastic_2])
+  def test_plastics_on_shared_line_emit_own_purchases_summing_to_line_total
+    # Per-plastic monthPurchasesAmount is the live per-card balance; the
+    # plastics' amounts sum to the line outstanding (limit - available), so
+    # the debt is NOT duplicated across plastics.
+    line = { "creditLimit" => 6500.0, "availableBalance" => 5071.74,
+             "associatedAccount" => { "productNumber" => "1465" } }
+    p1 = credit_card_product(line.merge("uuid" => "p1", "productNumber" => "5160974472951087",
+                                        "monthPurchasesAmount" => 360.44))
+    p2 = credit_card_product(line.merge("uuid" => "p2", "productNumber" => "5160974472951095",
+                                        "monthPurchasesAmount" => 1067.82))
+    payload = normalizer.call([p1, p2])
 
-    assert_equal [BigDecimal("-2182.81"), BigDecimal("-2182.81")],
-                 payload.accounts.map { |a| a.balance.current }
+    a1087 = payload.accounts.find { |a| a.metadata["ing_product_number"].end_with?("1087") }
+    a1095 = payload.accounts.find { |a| a.metadata["ing_product_number"].end_with?("1095") }
+    assert_equal BigDecimal("-360.44"),  a1087.balance.current
+    assert_equal BigDecimal("-1067.82"), a1095.balance.current
+    assert_equal "ing_live:card_purchases", a1087.metadata["balance_source"]
+    # Sum equals the authoritative line outstanding (6500 - 5071.74).
+    assert_equal BigDecimal("-1428.26"), payload.accounts.sum { |a| a.balance.current }
+  end
+
+  def test_line_remainder_lands_on_carrier_when_purchases_undershoot
+    # Pago aplazado: per-plastic purchases (300 + 100) sum to LESS than the
+    # line outstanding (6500 - 5071.74 = 1428.26). The remainder (1028.26)
+    # lands on the carrier (active principal) so the per-plastic balances
+    # still total the authoritative line figure — never under-reporting debt.
+    line = { "creditLimit" => 6500.0, "availableBalance" => 5071.74,
+             "associatedAccount" => { "productNumber" => "1465" } }
+    principal = credit_card_product(line.merge(
+      "uuid" => "p1", "productNumber" => "5160974472951087",
+      "monthPurchasesAmount" => 300.0, "holder" => { "type" => "Principal" }))
+    adicional = credit_card_product(line.merge(
+      "uuid" => "p2", "productNumber" => "5160974472951095",
+      "monthPurchasesAmount" => 100.0, "holder" => { "type" => "Adicional" }))
+    payload = normalizer.call([principal, adicional])
+
+    a1087 = payload.accounts.find { |a| a.metadata["ing_product_number"].end_with?("1087") }
+    a1095 = payload.accounts.find { |a| a.metadata["ing_product_number"].end_with?("1095") }
+    assert_equal BigDecimal("-1328.26"), a1087.balance.current   # 300 + 1028.26 remainder
+    assert_equal BigDecimal("-100.00"),  a1095.balance.current
+    assert_equal "ing_live:card_purchases+line_reconcile", a1087.metadata["balance_source"]
+    assert_equal BigDecimal("-1428.26"), payload.accounts.sum { |a| a.balance.current }
+  end
+
+  def test_separate_lines_do_not_cross_reconcile
+    # Two distinct lines (different creditLimit) billed to the same account
+    # must reconcile independently, not pool their remainders.
+    line_a = credit_card_product("uuid" => "a", "productNumber" => "5160974472951087",
+                                 "creditLimit" => 6500.0, "availableBalance" => 5071.74,
+                                 "monthPurchasesAmount" => 1428.26,
+                                 "associatedAccount" => { "productNumber" => "1465" })
+    line_b = credit_card_product("uuid" => "b", "productNumber" => "4174804472951026",
+                                 "creditLimit" => 1485.0, "availableBalance" => 1485.0,
+                                 "monthPurchasesAmount" => 0.0,
+                                 "associatedAccount" => { "productNumber" => "1465" })
+    payload = normalizer.call([line_a, line_b])
+    a = payload.accounts.find { |x| x.metadata["ing_product_number"].end_with?("1087") }
+    b = payload.accounts.find { |x| x.metadata["ing_product_number"].end_with?("1026") }
+    assert_equal BigDecimal("-1428.26"), a.balance.current
+    assert_equal BigDecimal("0"),        b.balance.current
   end
 
   def test_credit_card_account_id_stable_across_plastic_uuid_change
