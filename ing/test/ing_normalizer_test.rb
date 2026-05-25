@@ -100,6 +100,21 @@ class IngNormalizerTest < Minitest::Test
     }.merge(overrides)
   end
 
+  def test_credit_card_name_disambiguated_by_pan_last4
+    # Two plastics sharing a generic alias must NOT collide on name —
+    # downstream (Sure) merges same-named accounts. Append the PAN last-4.
+    p1 = credit_card_product("uuid" => "p1", "alias" => "Tarjeta Crédito", "productNumber" => "5160974472951087")
+    p2 = credit_card_product("uuid" => "p2", "alias" => "Tarjeta Crédito", "productNumber" => "5160974472951095")
+    names = normalizer.call([p1, p2]).accounts.map(&:name)
+    assert_equal ["Tarjeta Crédito ·1087", "Tarjeta Crédito ·1095"], names
+    refute_equal names[0], names[1]
+  end
+
+  def test_credit_card_name_not_double_appended_when_alias_has_last4
+    acct = normalizer.call([credit_card_product("alias" => "Card 1018", "productNumber" => "4174804472951018")]).accounts.first
+    assert_equal "Card 1018", acct.name
+  end
+
   def test_credit_card_emits_account_plus_liability
     payload = normalizer.call([credit_card_product("uuid" => "cc-1", "alias" => "Visa")])
     assert_equal 1, payload.accounts.size
