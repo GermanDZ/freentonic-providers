@@ -124,7 +124,7 @@ module Freentonic
             institution: INSTITUTION,
             source_id:   uuid,
             currency:    product["currency"] || "EUR",
-            name:        pick_name(product),
+            name:        pick_name(product, kind),
             type:        kind == "liability" ? "credit_card" : "checking",
             iban:        iban,
             portable_ref: portable_ref,
@@ -281,8 +281,21 @@ module Freentonic
           )
         end
 
-        def pick_name(product)
-          first_present(product["alias"], product["name"]) || "ING"
+        # Credit-card plastics often share a generic alias ("Tarjeta
+        # Crédito"). Downstream SimpleFIN clients (Sure) key/merge accounts
+        # by name during setup, so two identically-named plastics on one
+        # line get linked to a SINGLE downstream account — commingling their
+        # transactions and flip-flopping the balance. Disambiguate every
+        # plastic by appending its PAN last-4 so each is unmistakably its
+        # own account. acc_<hex> (portable_ref) is unchanged — this is
+        # display-only.
+        def pick_name(product, kind = nil)
+          base = first_present(product["alias"], product["name"]) || "ING"
+          if kind == "liability"
+            last4 = product["productNumber"].to_s[-4..]
+            base = "#{base} ·#{last4}" if last4 && !last4.empty? && !base.include?(last4)
+          end
+          base
         end
 
         def compact_whitespace(str)
