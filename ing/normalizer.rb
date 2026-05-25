@@ -17,12 +17,17 @@ module Freentonic
 
         def call(raw, context: {})
           accounts, liabilities, transactions = [], [], []
+          products = Array(raw)
+          # Per-plastic credit-card balances, reconciled per revolving line.
+          # Computed up front because the figure for any one plastic depends
+          # on its line siblings (see #compute_cc_balances).
+          cc_balances = compute_cc_balances(products)
 
-          Array(raw).each do |product|
+          products.each do |product|
             kind = KIND_BY_PRODUCT_TYPE[product["type"].to_i]
             next if kind.nil?
 
-            account = build_account(product, kind)
+            account = build_account(product, kind, cc_balances)
             accounts << account
 
             if kind == "liability"
@@ -82,19 +87,31 @@ module Freentonic
         # ING issues one product per plastic card. We emit one canonical
         # Account per plastic so each plastic carries its own portable_ref
         # (BANKID:PAN_LAST4), which is what cross-source matching with
-        # Fintonic — and any future card-level merge layer — joins on. The
-        # framework treats balance/liability as per-Account; line-level
-        # debt that's actually shared across plastics on the same revolving
-        # credit line (creditLimit/availableBalance is line-level, not
-        # plastic-level) gets emitted on every plastic and the consolidation
-        # layer in simplefreen is responsible for de-duplicating once
-        # auto-link fires across the per-plastic Accounts that share a line.
+        # Fintonic — and any future card-level merge layer — joins on.
+        #
+        # Balance: `creditLimit`/`availableBalance` are LINE-level (shared by
+        # every plastic on the same revolving line), so they used to be
+        # emitted identically on every plastic — and any downstream that
+        # sums accounts (Sure, Actual) multi-counted the debt. ING also
+        # exposes a PER-PLASTIC `monthPurchasesAmount`, and those sum to the
+        # line's `limit − available` exactly (verified against the bank).
+        # We now emit each plastic's own `monthPurchasesAmount` — exactly what
+        # the ING app shows as that card's balance (verified). We don't
+        # reconcile to `limit − available`, which can include pending holds
+        # the bank posts to no card (see #compute_cc_balances). Net effect:
+        # no duplication, per-card balances matching the bank app, fully live
+        # — no operator balance_override needed.
 
-        def build_account(product, kind)
+        def build_account(product, kind, cc_balances = {})
           uuid = product["uuid"]
           iban = product["iban"].to_s.gsub(/\s/, "")
           iban = nil if iban.empty?
-          balance_cents, balance_source = extract_balance(product, kind)
+          balance_cents, balance_source =
+            if kind == "liability"
+              cc_balances[product["productNumber"]] || [nil, nil]
+            else
+              extract_asset_balance(product)
+            end
 
           portable_ref, portable_id =
             if kind == "liability"
@@ -117,35 +134,95 @@ module Freentonic
               "ing_product_type"        => product["type"],
               "ing_product_number"      => product["productNumber"],
               "balance_source"          => balance_source,
+              "ing_month_purchases"     => (kind == "liability" ? product["monthPurchasesAmount"] : nil),
               "partial_data_suspected"  => product["_partial_data_suspected"]
             }.compact
           )
         end
 
         # Asset products carry a top-level numeric `balance` (the cleared
-        # account balance). Credit-card products don't — ING's /products
-        # payload exposes `creditLimit` and `availableBalance` for each
-        # card, and the outstanding amount is the difference. Stored as a
-        # NEGATIVE number to fit SimpleFIN/canonical's liability convention
-        # ("you owe this much"). creditLimit/availableBalance are actually
-        # line-level (shared across all plastics on the same revolving
-        # line), so every plastic on a shared line emits the same balance —
-        # simplefreen's per-card consolidation handles the dedup once
-        # auto-link fires across them via portable_ref.
-        def extract_balance(product, kind)
-          if kind == "liability"
-            limit     = product["creditLimit"]
-            available = product["availableBalance"]
-            if limit.is_a?(Numeric) && available.is_a?(Numeric)
-              outstanding_cents = ((limit.to_f - available.to_f) * 100).round
-              [-outstanding_cents, "ing_live:credit_limit_minus_available"]
-            else
-              [nil, nil]
-            end
-          elsif product["balance"].is_a?(Numeric)
+        # account balance), emitted verbatim (positive).
+        def extract_asset_balance(product)
+          if product["balance"].is_a?(Numeric)
             [(product["balance"].to_f * 100).round, "ing_live:product_balance"]
           else
             [nil, nil]
+          end
+        end
+
+        # Per-plastic credit-card balances, one per revolving line.
+        #
+        # Returns { productNumber => [balance_cents (negative = owed), source] }.
+        #
+        # ING reports `creditLimit`/`availableBalance` at the LINE level
+        # (identical on every plastic of a line) and a PER-plastic
+        # `monthPurchasesAmount`. The per-plastic figure is exactly what the
+        # ING app shows as each card's balance (verified against the app:
+        # 1380.25 + 2529.07), so we emit it verbatim.
+        #
+        # We deliberately DON'T reconcile to the line's `limit − available`.
+        # That figure can exceed the sum of the posted per-card balances
+        # because it also reflects pending authorizations / holds the bank
+        # hasn't posted to any plastic; topping a card up to it would inflate
+        # that card past what the bank app shows. (`spentAmount` is ignored
+        # too — observed reporting a stale non-zero figure on a paid line.)
+        #
+        # Fallback: only when a line exposes NO per-plastic purchases at all
+        # do we fall back to putting the whole line outstanding on the carrier
+        # (active principal) and zeroing the rest, so the debt isn't lost or
+        # multi-counted.
+        def compute_cc_balances(products)
+          ccs = Array(products).select do |p|
+            p.is_a?(Hash) && KIND_BY_PRODUCT_TYPE[p["type"].to_i] == "liability"
+          end
+
+          out = {}
+          ccs.group_by { |p| cc_line_key(p) }.each_value do |line_cards|
+            if line_cards.any? { |p| !month_purchases_cents(p).nil? }
+              line_cards.each do |p|
+                out[p["productNumber"]] = [-(month_purchases_cents(p) || 0), "ing_live:card_purchases"]
+              end
+            elsif (line_total = line_outstanding_cents(line_cards.first))
+              carrier = pick_line_carrier(line_cards)
+              line_cards.each do |p|
+                cents = p.equal?(carrier) ? line_total : 0
+                out[p["productNumber"]] = [-cents, "ing_live:line_outstanding"]
+              end
+            else
+              line_cards.each { |p| out[p["productNumber"]] = [nil, nil] }
+            end
+          end
+          out
+        end
+
+        # Line identity: plastics on the same revolving line share both the
+        # billing account and the credit limit. (All of a household's cards
+        # can bill to one current account, so the limit is needed too.)
+        def cc_line_key(product)
+          [product.dig("associatedAccount", "productNumber"), product["creditLimit"]]
+        end
+
+        # Authoritative outstanding for the whole line, in cents (positive
+        # when money is owed). nil when ING didn't expose the line figures.
+        def line_outstanding_cents(product)
+          limit     = product["creditLimit"]
+          available = product["availableBalance"]
+          return nil unless limit.is_a?(Numeric) && available.is_a?(Numeric)
+          ((limit.to_f - available.to_f) * 100).round
+        end
+
+        def month_purchases_cents(product)
+          mp = product["monthPurchasesAmount"]
+          mp.is_a?(Numeric) ? (mp.to_f * 100).round : nil
+        end
+
+        # Carrier = the plastic that absorbs any unattributed line remainder.
+        # Prefer the principal cardholder's card, then the highest current
+        # spend, then lowest PAN for determinism.
+        def pick_line_carrier(cards)
+          cards.min_by do |p|
+            principal = p.dig("holder", "type") == "Principal" ? 0 : 1
+            [principal, -(month_purchases_cents(p) || 0), p["productNumber"].to_s]
           end
         end
 
