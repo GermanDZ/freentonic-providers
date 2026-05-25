@@ -95,11 +95,12 @@ module Freentonic
         # sums accounts (Sure, Actual) multi-counted the debt. ING also
         # exposes a PER-PLASTIC `monthPurchasesAmount`, and those sum to the
         # line's `limit − available` exactly (verified against the bank).
-        # We now emit each plastic's own `monthPurchasesAmount`, reconciled
-        # per line so the per-plastic figures always total the authoritative
-        # line balance even under pago-aplazado (see #compute_cc_balances).
-        # Net effect: no duplication, per-card accuracy, fully live — no
-        # operator balance_override needed.
+        # We now emit each plastic's own `monthPurchasesAmount` — exactly what
+        # the ING app shows as that card's balance (verified). We don't
+        # reconcile to `limit − available`, which can include pending holds
+        # the bank posts to no card (see #compute_cc_balances). Net effect:
+        # no duplication, per-card balances matching the bank app, fully live
+        # — no operator balance_override needed.
 
         def build_account(product, kind, cc_balances = {})
           uuid = product["uuid"]
@@ -149,25 +150,27 @@ module Freentonic
           end
         end
 
-        # Per-plastic credit-card balances, reconciled per revolving line.
+        # Per-plastic credit-card balances, one per revolving line.
         #
         # Returns { productNumber => [balance_cents (negative = owed), source] }.
         #
         # ING reports `creditLimit`/`availableBalance` at the LINE level
-        # (identical on every plastic of a line — `limit − available` is the
-        # authoritative outstanding for the whole line) and a PER-plastic
-        # `monthPurchasesAmount`. In the common case (pago total, no carried
-        # balance) the per-plastic amounts sum to the line outstanding
-        # exactly, so each plastic simply emits its own `monthPurchasesAmount`.
+        # (identical on every plastic of a line) and a PER-plastic
+        # `monthPurchasesAmount`. The per-plastic figure is exactly what the
+        # ING app shows as each card's balance (verified against the app:
+        # 1380.25 + 2529.07), so we emit it verbatim.
         #
-        # To stay correct under pago aplazado / carried balances — where the
-        # per-plastic purchases would sum to LESS than the line outstanding —
-        # we reconcile: any remainder (line_outstanding − Σ monthPurchases)
-        # lands on the line's carrier plastic (active principal). That way the
-        # per-plastic figures always total the authoritative line balance and
-        # we never under-report debt. `spentAmount` is deliberately ignored —
-        # it is unreliable (observed reporting a stale non-zero figure on a
-        # fully-paid line).
+        # We deliberately DON'T reconcile to the line's `limit − available`.
+        # That figure can exceed the sum of the posted per-card balances
+        # because it also reflects pending authorizations / holds the bank
+        # hasn't posted to any plastic; topping a card up to it would inflate
+        # that card past what the bank app shows. (`spentAmount` is ignored
+        # too — observed reporting a stale non-zero figure on a paid line.)
+        #
+        # Fallback: only when a line exposes NO per-plastic purchases at all
+        # do we fall back to putting the whole line outstanding on the carrier
+        # (active principal) and zeroing the rest, so the debt isn't lost or
+        # multi-counted.
         def compute_cc_balances(products)
           ccs = Array(products).select do |p|
             p.is_a?(Hash) && KIND_BY_PRODUCT_TYPE[p["type"].to_i] == "liability"
@@ -175,26 +178,18 @@ module Freentonic
 
           out = {}
           ccs.group_by { |p| cc_line_key(p) }.each_value do |line_cards|
-            line_total = line_outstanding_cents(line_cards.first)
-            sum_base   = line_cards.sum { |p| month_purchases_cents(p) || 0 }
-            carrier    = line_total ? pick_line_carrier(line_cards) : nil
-            remainder  = line_total ? (line_total - sum_base) : 0
-
-            line_cards.each do |p|
-              mp = month_purchases_cents(p)
-              if mp.nil? && line_total.nil?
-                out[p["productNumber"]] = [nil, nil]   # genuinely no balance data
-                next
+            if line_cards.any? { |p| !month_purchases_cents(p).nil? }
+              line_cards.each do |p|
+                out[p["productNumber"]] = [-(month_purchases_cents(p) || 0), "ing_live:card_purchases"]
               end
-              cents  = mp || 0
-              source = "ing_live:card_purchases"
-              if p.equal?(carrier) && remainder != 0
-                cents += remainder
-                # Remainder dominates when the bank exposes no per-plastic
-                # purchases (e.g. all-deferred line): label it as line-level.
-                source = mp.nil? || mp.zero? ? "ing_live:line_outstanding" : "ing_live:card_purchases+line_reconcile"
+            elsif (line_total = line_outstanding_cents(line_cards.first))
+              carrier = pick_line_carrier(line_cards)
+              line_cards.each do |p|
+                cents = p.equal?(carrier) ? line_total : 0
+                out[p["productNumber"]] = [-cents, "ing_live:line_outstanding"]
               end
-              out[p["productNumber"]] = [-cents, source]
+            else
+              line_cards.each { |p| out[p["productNumber"]] = [nil, nil] }
             end
           end
           out

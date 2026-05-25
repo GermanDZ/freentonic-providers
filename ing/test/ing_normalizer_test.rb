@@ -132,7 +132,7 @@ class IngNormalizerTest < Minitest::Test
                                                    "availableBalance" => 1485.0)])
     acct = payload.accounts.first
     assert_equal BigDecimal("0"), acct.balance.current
-    assert_equal "ing_live:card_purchases", acct.metadata["balance_source"]
+    assert_equal "ing_live:line_outstanding", acct.metadata["balance_source"]
   end
 
   def test_credit_card_without_limit_or_available_has_nil_balance
@@ -190,11 +190,11 @@ class IngNormalizerTest < Minitest::Test
     assert_equal BigDecimal("-1428.26"), payload.accounts.sum { |a| a.balance.current }
   end
 
-  def test_line_remainder_lands_on_carrier_when_purchases_undershoot
-    # Pago aplazado: per-plastic purchases (300 + 100) sum to LESS than the
-    # line outstanding (6500 - 5071.74 = 1428.26). The remainder (1028.26)
-    # lands on the carrier (active principal) so the per-plastic balances
-    # still total the authoritative line figure — never under-reporting debt.
+  def test_per_card_purchases_emitted_verbatim_not_reconciled_to_line
+    # Per-plastic monthPurchasesAmount is the bank-app per-card balance and
+    # is emitted as-is. We do NOT top it up to the line's limit-available
+    # (6500 - 5071.74 = 1428.26): that gap is pending holds the bank posts to
+    # no card, and adding it would inflate a plastic past what the app shows.
     line = { "creditLimit" => 6500.0, "availableBalance" => 5071.74,
              "associatedAccount" => { "productNumber" => "1465" } }
     principal = credit_card_product(line.merge(
@@ -207,10 +207,9 @@ class IngNormalizerTest < Minitest::Test
 
     a1087 = payload.accounts.find { |a| a.metadata["ing_product_number"].end_with?("1087") }
     a1095 = payload.accounts.find { |a| a.metadata["ing_product_number"].end_with?("1095") }
-    assert_equal BigDecimal("-1328.26"), a1087.balance.current   # 300 + 1028.26 remainder
-    assert_equal BigDecimal("-100.00"),  a1095.balance.current
-    assert_equal "ing_live:card_purchases+line_reconcile", a1087.metadata["balance_source"]
-    assert_equal BigDecimal("-1428.26"), payload.accounts.sum { |a| a.balance.current }
+    assert_equal BigDecimal("-300.00"), a1087.balance.current
+    assert_equal BigDecimal("-100.00"), a1095.balance.current
+    assert_equal "ing_live:card_purchases", a1087.metadata["balance_source"]
   end
 
   def test_separate_lines_do_not_cross_reconcile
