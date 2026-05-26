@@ -41,6 +41,7 @@ kind_by_product_type:
   17: asset       # Cuenta SIN NÓMINA
   20: asset       # Cuenta NARANJA
   42: investment  # Cuenta de valores
+  77: loan        # Préstamo NARANJA (balance-only; no /search movements)
 
 # Allowlist of raw movement fields preserved into transaction.metadata
 # for debugging / reconciliation. Source key on the right; output key

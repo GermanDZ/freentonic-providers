@@ -20,6 +20,46 @@ GET  https://api.ing.ingdirect.es/saf/tpa/accesstoken/synchronize (post-SCA toke
 `/search` is the only data-fetching endpoint we use — it covers
 checking, savings, and credit-card products in a unified shape.
 
+## Product types and what we serve
+
+`/position-keeping` returns a numeric `type` per product. The
+`kind_by_product_type` map in `ing/config.yml` is the allowlist;
+any type not listed is dropped at extract time with a loud
+`Skipping product type <N>` log line (so a newly-opened product
+surfaces in the logs rather than silently vanishing).
+
+| kind | served as | `/search` | balance source |
+|---|---|---|---|
+| asset | checking | yes | top-level `balance` |
+| liability (credit card) | credit_card | yes | per-plastic `monthPurchasesAmount` |
+| investment | checking | **no** | `/position-keeping` balance only |
+| loan | loan | **no** | top-level `balance` (negative = owed) |
+
+**Loans** (installment loans) are balance-only, like investments,
+but for a different reason: their amortization isn't exposed by
+`/search` at all — the monthly payments post as debits on the
+linked current account. Two loan-specific shape facts:
+
+- A loan's `/position-keeping` entry carries **no IBAN** (assets
+  do). Its `productNumber` is the BBAN, so the normalizer derives
+  the portable key from its last 4 digits. This keeps the canonical
+  account id — and the downstream consumer's external id — stable
+  across reimports despite the volatile V1ID `source_id`.
+- The outstanding principal arrives as a **negative** `balance` /
+  `availableBalance`, which is the correct sign for a liability
+  account downstream; it's emitted verbatim.
+
+**Held credits and the balance fields.** When a movement is booked
+but not yet released (e.g. a loan disbursement landing "in held"),
+the linked account's legacy `balance` includes it while
+`availableBalance` / `balanceToShow` exclude it — the two diverge
+by exactly the held amount until the hold releases. We serve legacy
+`balance` (`extract_asset_balance`), so the held funds are captured
+and the matching loan liability offsets them; net worth stays
+correct. Do **not** switch asset balance to `availableBalance`:
+combined with the loan that would understate net worth by the held
+amount.
+
 ## Stable transaction id: `v2-seq:<productId>:<transactionSequence>`
 
 Every row carries:

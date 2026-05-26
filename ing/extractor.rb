@@ -219,6 +219,12 @@ module Freentonic
                           "and poisons multi-UUID batches."
               next
             end
+            if kind == "loan"
+              stdout.puts "  Serving #{first_present(product['alias'], product['name'])} " \
+                          "balance-only (kind=loan): amortization isn't in /search; " \
+                          "payments post on the linked account."
+              next
+            end
             fetchable << [product, v2_uuid]
           end
 

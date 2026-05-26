@@ -34,6 +34,27 @@ class IngNormalizerTest < Minitest::Test
     }.merge(overrides)
   end
 
+  def loan_product(overrides = {})
+    {
+      "uuid"            => "loan-v1id",
+      "type"            => 77, # loan ("Préstamo")
+      "name"            => "My loan",
+      "productNumber"   => "10000000000000000001", # synthetic BBAN, last-4 0001
+      "currency"        => "EUR",
+      "balance"         => -1234.56, # outstanding principal owed (negative)
+      "availableBalance" => -1234.56,
+      "nextPayOffDate"  => "01/02/2030",
+      "nextPayOffAmount" => 99.99,
+      "initialAmount"   => 2000.0,
+      "pendingAmount"   => 1234.56,
+      "pendingPayments" => 12,
+      "tin"             => 1.5,
+      "tae"             => 1.75,
+      "endDate"         => "01/02/2035",
+      "movements"       => []
+    }.merge(overrides)
+  end
+
   # --- envelope + shape --------------------------------------------------
 
   def test_returns_canonical_payload
@@ -458,6 +479,48 @@ class IngNormalizerTest < Minitest::Test
     mv = asset_movement("uuid" => nil)
     payload = normalizer.call([asset_product("movements" => [mv])])
     assert_empty payload.transactions
+  end
+
+  # --- loan (ING product type 77) ---------------------------------------
+
+  def test_loan_emits_loan_account
+    payload = normalizer.call([loan_product])
+    acct = payload.accounts.first
+
+    assert_equal 1, payload.accounts.size
+    assert_equal "loan", acct.type
+    assert_equal "My loan", acct.name
+    assert_equal "loan-v1id", acct.source_id
+    assert_equal BigDecimal("-1234.56"), acct.balance.current
+    assert_equal "ing_live:product_balance", acct.metadata["balance_source"]
+    assert_empty payload.transactions
+  end
+
+  def test_loan_emits_loan_liability_with_economics
+    payload = normalizer.call([loan_product])
+
+    assert_equal 1, payload.liabilities.size
+    liab = payload.liabilities.first
+    assert_match(/\Aliab_[0-9a-f]{16}\z/, liab.id)
+    assert_equal payload.accounts.first.id, liab.account_id
+    assert_equal "loan", liab.type
+    assert_equal 1.5, liab.metadata["tin"]
+    assert_equal 12,  liab.metadata["pending_payments"]
+    assert_equal Date.new(2030, 2, 1), liab.due_date
+  end
+
+  def test_loan_portable_id_derived_from_product_number
+    acct = normalizer.call([loan_product]).accounts.first
+    # productNumber 10000000000000000001 → last-4 "0001", BANK_CODE 1465
+    assert_equal "bank:1465:0001", acct.portable_id
+  end
+
+  def test_loan_id_stable_across_v1id_churn
+    # No IBAN on a loan, so the id must key off productNumber, not the
+    # volatile V1ID source_id — otherwise Sure churns the account each run.
+    initial = normalizer.call([loan_product]).accounts.first
+    after   = normalizer.call([loan_product("uuid" => "loan-v1id-reissued")]).accounts.first
+    assert_equal initial.id, after.id
   end
 
   # --- pre-clearing dup collapse (dup-class-2) --------------------------
