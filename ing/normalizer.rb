@@ -32,6 +32,8 @@ module Freentonic
 
             if kind == "liability"
               liabilities << build_liability(product, account)
+            elsif kind == "loan"
+              liabilities << build_loan_liability(product, account)
             end
 
             Array(product["movements"]).each do |mv|
@@ -116,6 +118,13 @@ module Freentonic
           portable_ref, portable_id =
             if kind == "liability"
               Builder.card_pan_portable_keys(product["productNumber"], bank_code: BANK_CODE)
+            elsif kind == "loan"
+              # Loans expose no IBAN in /position-keeping, but productNumber is
+              # the BBAN (bank+branch+check+account), so its last 4 digits give
+              # the same stable key the IBAN path produces. Keying off it (not
+              # the volatile V1ID source_id) keeps the canonical Account.id —
+              # and therefore Sure's external_id — stable across reimports.
+              loan_portable_keys(product["productNumber"])
             else
               Builder.spanish_iban_portable_keys(iban, bank_code: BANK_CODE)
             end
@@ -125,7 +134,7 @@ module Freentonic
             source_id:   uuid,
             currency:    product["currency"] || "EUR",
             name:        pick_name(product, kind),
-            type:        kind == "liability" ? "credit_card" : "checking",
+            type:        account_type_for(kind),
             iban:        iban,
             portable_ref: portable_ref,
             portable_id:  portable_id,
@@ -140,14 +149,41 @@ module Freentonic
           )
         end
 
+        # Canonical account.type by kind. Loans map to "loan" (which
+        # reshape.rb forwards as SimpleFIN extra["account-type"] so Sure
+        # classifies it as a Loan); credit cards to "credit_card"; the
+        # rest (asset, investment) default to "checking".
+        def account_type_for(kind)
+          case kind
+          when "liability" then "credit_card"
+          when "loan"      then "loan"
+          else                  "checking"
+          end
+        end
+
         # Asset products carry a top-level numeric `balance` (the cleared
-        # account balance), emitted verbatim (positive).
+        # account balance), emitted verbatim (positive). Loans use the same
+        # field: it's negative (the outstanding principal owed), which is the
+        # right sign for a liability account downstream.
         def extract_asset_balance(product)
           if product["balance"].is_a?(Numeric)
             [(product["balance"].to_f * 100).round, "ing_live:product_balance"]
           else
             [nil, nil]
           end
+        end
+
+        # Stable portable key for a loan, derived from its productNumber
+        # (the BBAN). Mirrors Builder.spanish_iban_portable_keys' output
+        # shape ("1465:0001" / "bank:1465:0001") so the loan's canonical id
+        # is consistent with the IBAN-keyed asset accounts. Returns
+        # [nil, nil] when productNumber is missing or too short, letting the
+        # framework fall back to (institution, source_id).
+        def loan_portable_keys(product_number)
+          pn = product_number.to_s.gsub(/\s/, "")
+          return [nil, nil] if pn.length < 4
+          ref = "#{BANK_CODE}:#{pn[-4, 4]}"
+          [ref, "bank:#{ref}"]
         end
 
         # Per-plastic credit-card balances, one per revolving line.
@@ -236,6 +272,31 @@ module Freentonic
               "ing_product_type"   => product["type"],
               "ing_product_number" => product["productNumber"]
             }
+          )
+        end
+
+        # Canonical liability record for an installment loan. Carries the loan
+        # economics from /position-keeping (rate, term, next payment) for the
+        # audit log; the served balance lives on the account. due_date is the
+        # next pay-off date when ING exposes a parseable one.
+        def build_loan_liability(product, account)
+          Builder.build_liability(
+            account_id: account.id,
+            type:       "loan",
+            currency:   account.currency,
+            source_id:  product["uuid"],
+            due_date:   parse_date(product["nextPayOffDate"], preferred_formats: ING_DATE_FORMATS),
+            metadata:   {
+              "ing_product_type"    => product["type"],
+              "ing_product_number"  => product["productNumber"],
+              "initial_amount"      => product["initialAmount"],
+              "pending_amount"      => product["pendingAmount"],
+              "pending_payments"    => product["pendingPayments"],
+              "next_pay_off_amount" => product["nextPayOffAmount"],
+              "tin"                 => product["tin"],
+              "tae"                 => product["tae"],
+              "end_date"            => product["endDate"]
+            }.compact
           )
         end
 
