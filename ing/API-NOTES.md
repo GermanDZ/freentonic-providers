@@ -69,10 +69,28 @@ Every row carries:
 ```
 
 That pair is stable across refetches of the same posting — even when
-the description gets enriched as the row transitions through
-pending lifecycle stages, and even across login sessions. The
+the description gets enriched, and across login sessions. The
 extractor emits `v2-seq:<productId>:<seq>` as the canonical
 source-id, which the framework hashes into the `txn_<hex>` row id.
+
+**Exception — settlement renumber (verified 2026-05-27).** The
+`transactionSequence` is *not* stable across a charge **settling**.
+ING assigns a **provisional** sequence when a charge first appears
+(for one observed card, ~9.3–9.4 *billion*), then **renumbers** it to
+a **permanent** sequence (~6.2 *hundred-million*) once it clears —
+typically enriching the description (`DECATHLON` → `DECATHLON SAN
+SEBASTIA`) and occasionally shifting the date a day or two. Crucially
+`status` stays `posted` the whole time (it is *not* a pending→posted
+transition), and the `uuid` embeds the seq so it changes too — i.e.
+there is **no stable ING id across settlement**. The provisional and
+final versions usually arrive in *different* syncs (the provisional
+drops out of `/search` once renumbered), so they hash to two
+different `txn_<hex>` ids for one real posting. The seq *magnitude*
+is per-product and not a reliable global discriminator. The
+provider's same-fetch `collapse_pre_clearing_dups` only catches the
+pair when both land in one response; the cross-fetch case is resolved
+downstream by the bridge's HistoryStore supersession promotion (see
+simplefreen `docs/simplefin-bridge-architecture.md`).
 
 Do **not** use `transactionLocalUUID`. It looks stable in a single
 response but is re-encrypted per request — same row, different
