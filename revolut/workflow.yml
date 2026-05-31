@@ -55,6 +55,14 @@ phases:
     # a broader includes fires as soon as either settles.
     # sso.revolut.com does not contain "app.revolut.com/", so this
     # reliably excludes the pre-login state.
+    #
+    # Tell the user what we're waiting on. The passcode auto-submits and
+    # Revolut sends the push unconditionally, so this note is plain (not
+    # note_if_selector like ING, whose push page only appears in some
+    # states). The wait itself stays silent — no browser-side continue
+    # button; approving on the phone is the interaction.
+    - action: note
+      message: "⏳ Revolut sent a notification — open the Revolut app on your phone and approve to continue."
     - action: wait_url
       includes: "app.revolut.com/"
       timeout: 300
