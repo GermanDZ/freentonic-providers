@@ -56,15 +56,17 @@ phases:
     # sso.revolut.com does not contain "app.revolut.com/", so this
     # reliably excludes the pre-login state.
     #
-    # Tell the user what we're waiting on. The passcode auto-submits and
-    # Revolut sends the push unconditionally, so this note is plain (not
-    # note_if_selector like ING, whose push page only appears in some
-    # states). The wait itself stays silent — no browser-side continue
-    # button; approving on the phone is the interaction.
-    - action: note
-      message: "⏳ Revolut sent a notification — open the Revolut app on your phone and approve to continue."
-    - action: wait_url
-      includes: "app.revolut.com/"
+    # Surface the wait as a structured `await` prompt so the admin UI shows
+    # a clear "waiting for your approval" card (with a live spinner) instead
+    # of silent progress dots. The passcode auto-submits and Revolut sends
+    # the push unconditionally, so this always fires once we're on SSO. The
+    # card auto-clears the instant the browser redirects back to
+    # app.revolut.com (i.e. the phone approval landed) — approving on the
+    # phone is the whole interaction; the card's fallback button is only for
+    # a slow redirect. On a tty/local run this degrades to a plain wait_url.
+    - action: await_external_approval
+      message: "Approve the sign-in in the Revolut app on your phone — this continues automatically once approved."
+      url_includes: "app.revolut.com/"
       timeout: 300
 
   post_login:
