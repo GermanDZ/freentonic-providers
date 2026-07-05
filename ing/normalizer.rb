@@ -37,7 +37,7 @@ module Freentonic
             end
 
             Array(product["movements"]).each do |mv|
-              txn = build_transaction(product, account, mv)
+              txn = build_transaction(product, account, translate_movement(mv))
               transactions << txn if txn
             end
           end
@@ -53,6 +53,100 @@ module Freentonic
         end
 
         private
+
+        # ---------------------------------------------------------------
+        # Raw /v2/products/transactions/search row → legacy movement
+        # shape. The extractor attaches /search rows to products
+        # VERBATIM (the raw payload is honest bank output); this is
+        # where they become the shape build_transaction consumes.
+        #
+        # Shape guard: raw /search rows carry `transactionId` /
+        # `transactionDate` and never a top-level `uuid`; the legacy
+        # shape always has `uuid` (or is dropped downstream anyway).
+        # Legacy-shaped movements — saved raw payloads replayed via
+        # --from-raw, and the pre-migration fixtures — pass through
+        # untouched.
+        # ---------------------------------------------------------------
+
+        V2_SEARCH_ROW_MARKERS = %w[transactionId transactionDate].freeze
+
+        def translate_movement(mv)
+          return mv unless v2_search_row?(mv)
+          coerce_v2_search_to_legacy_shape(mv)
+        end
+
+        def v2_search_row?(mv)
+          mv.is_a?(Hash) && !mv.key?("uuid") &&
+            V2_SEARCH_ROW_MARKERS.any? { |k| mv.key?(k) }
+        end
+
+        # /search's envelope is a subset of the previous per-product v2
+        # endpoints — most notably it omits the CC `status` hash (so CC
+        # rows lose pending/settled distinction and normalize as
+        # `settled`) and exposes `amount` as a String (e.g. "-151.70")
+        # rather than a Numeric.
+        #
+        # The emitted `uuid` is the per-ledger-position cursor
+        # `v2-seq:<productId>:<transactionSequence>`. That cursor is
+        # ING's stable identity for the row across requests; the
+        # `transactionLocalUUID` field is an opaque envelope encrypted
+        # with a per-request nonce, so different fetches of the same
+        # row see different `transactionLocalUUID` values. We never
+        # use it as the canonical id source.
+        def coerce_v2_search_to_legacy_shape(tx)
+          {
+            "uuid"          => v2_stable_uuid(tx),
+            "amount"        => coerce_amount(tx["amount"]),
+            "effectiveDate" => yyyy_mm_dd_to_dd_mm_yyyy(tx["transactionDate"]),
+            "description"   => tx["description"],
+            "currency"      => "EUR",
+            "tranCode"      => tx["transactionCode"],
+            "store"         => tx["concept"],
+            "_v2_source"               => true,
+            "_v2_kind"                 => "search",
+            "_v2_subcategoryId"        => tx["subcategoryId"],
+            "_v2_balance"              => tx["balance"],
+            "_v2_transactionSequence"  => tx.dig("transactionId", "transactionSequence"),
+            "_v2_transactionLocalUUID" => tx["transactionLocalUUID"],
+            "_v2_mode"                 => tx["mode"]
+          }
+        end
+
+        # /search returns amount as a String ("-151.70").
+        # build_transaction requires a Numeric (returns nil for
+        # non-Numeric amounts to drop the row). Float() parses strictly
+        # — raising on garbage rather than silently coercing to 0.0 —
+        # so a malformed amount becomes a dropped row rather than a
+        # phantom 0.0 transaction. Numeric values pass through
+        # unchanged for forward-compat in case ING flips this back to
+        # a Numeric.
+        def coerce_amount(raw)
+          case raw
+          when Numeric then raw
+          when String  then Float(raw)
+          else nil
+          end
+        rescue ArgumentError
+          nil
+        end
+
+        # Per-product, per-position stable id. Returns nil if the v2
+        # response omits `transactionId`; build_transaction treats nil
+        # uuid as "drop this transaction" rather than synthesise an
+        # unstable fallback — we'd rather lose a row than re-introduce
+        # the dup bug.
+        def v2_stable_uuid(tx)
+          product_id = tx.dig("transactionId", "productId").to_s
+          seq        = tx.dig("transactionId", "transactionSequence").to_s
+          return nil if product_id.empty? || seq.empty?
+          "v2-seq:#{product_id}:#{seq}"
+        end
+
+        def yyyy_mm_dd_to_dd_mm_yyyy(s)
+          return nil unless s.is_a?(String) && s =~ /\A\d{4}-\d{2}-\d{2}\z/
+          y, m, d = s.split("-")
+          "#{d}/#{m}/#{y}"
+        end
 
         # ING's /v2/products/transactions/search re-emits the same real
         # posting under two `transactionSequence`s while it transitions

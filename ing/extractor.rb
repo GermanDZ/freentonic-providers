@@ -32,8 +32,10 @@
 #    mattered. If a future consumer needs pending-status fidelity, the
 #    fix is to layer a per-CC /extract?mode=P overlay on top of the
 #    /search results, merging by transactionSequence.
-#  - /search emits `amount` as a String (e.g. "-151.70"). Coerced to
-#    Numeric in coerce_v2_search_to_legacy_shape.
+#  - /search emits `amount` as a String (e.g. "-151.70"). Rows are
+#    attached to products verbatim; all shape translation (String →
+#    Numeric amount, ISO → DD/MM/YYYY dates, v2-seq stable-id
+#    synthesis) lives in the normalizer.
 #
 # Routing matrix:
 #
@@ -374,7 +376,10 @@ module Freentonic
         # Each call goes through the declarative fetch_v2_search
         # endpoint (json: body, paginated by offset). Rows from one
         # call already belong to one product, so no demux is needed —
-        # they assign directly to that product's movements.
+        # they attach VERBATIM to that product's movements. All shape
+        # translation (String amounts, ISO dates, v2-seq stable-id
+        # synthesis) lives in the normalizer — the raw payload carries
+        # honest /search rows.
         # ---------------------------------------------------------------
 
         def fetch_v2_search_into_products(fetchable, client, from_date, stdout, stderr)
@@ -388,78 +393,9 @@ module Freentonic
                 to_date:   Date.today
               )
             } || []
-            product["movements"] = Array(rows).map { |r| coerce_v2_search_to_legacy_shape(r) }
+            product["movements"] = Array(rows)
             stdout.puts "    [#{i + 1}/#{fetchable.size}] #{name}: #{product['movements'].size} rows"
           end
-        end
-
-        # Translate a /search row to the legacy /movements shape the
-        # normalizer consumes. /search's envelope is a subset of the
-        # previous per-product v2 endpoints — most notably it omits
-        # the CC `status` hash (so CC rows lose pending/settled
-        # distinction and normalize as `settled`) and exposes `amount`
-        # as a String (e.g. "-151.70") rather than a Numeric.
-        #
-        # The emitted `uuid` is the per-ledger-position cursor
-        # `v2-seq:<productId>:<transactionSequence>`. That cursor is
-        # ING's stable identity for the row across requests; the
-        # `transactionLocalUUID` field is an opaque envelope encrypted
-        # with a per-request nonce, so different fetches of the same
-        # row see different `transactionLocalUUID` values. We never
-        # use it as the canonical id source.
-        def coerce_v2_search_to_legacy_shape(tx)
-          {
-            "uuid"          => v2_stable_uuid(tx),
-            "amount"        => coerce_amount(tx["amount"]),
-            "effectiveDate" => yyyy_mm_dd_to_dd_mm_yyyy(tx["transactionDate"]),
-            "description"   => tx["description"],
-            "currency"      => "EUR",
-            "tranCode"      => tx["transactionCode"],
-            "store"         => tx["concept"],
-            "_v2_source"               => true,
-            "_v2_kind"                 => "search",
-            "_v2_subcategoryId"        => tx["subcategoryId"],
-            "_v2_balance"              => tx["balance"],
-            "_v2_transactionSequence"  => tx.dig("transactionId", "transactionSequence"),
-            "_v2_transactionLocalUUID" => tx["transactionLocalUUID"],
-            "_v2_mode"                 => tx["mode"]
-          }
-        end
-
-        # /search returns amount as a String ("-151.70"). The
-        # normalizer requires a Numeric (returns nil for non-Numeric
-        # amounts to drop the row). Float() parses strictly — raising
-        # on garbage rather than silently coercing to 0.0 — so a
-        # malformed amount becomes a visible error rather than a
-        # silently-dropped row that would mask data quality issues.
-        # Numeric values pass through unchanged for forward-compat in
-        # case ING flips this back to a Numeric.
-        def coerce_amount(raw)
-          case raw
-          when Numeric then raw
-          when String  then Float(raw)
-          else nil
-          end
-        rescue ArgumentError
-          nil
-        end
-
-        # Per-product, per-position stable id. Returns nil if the v2
-        # response omits `transactionId`; the normalizer treats nil
-        # uuid as "drop this transaction" rather than synthesise an
-        # unstable fallback — we'd rather lose a row than re-introduce
-        # the dup bug.
-        def v2_stable_uuid(tx)
-          product_id = tx.dig("transactionId", "productId").to_s
-          seq        = tx.dig("transactionId", "transactionSequence").to_s
-          return nil if product_id.empty? || seq.empty?
-          "v2-seq:#{product_id}:#{seq}"
-        end
-
-        def yyyy_mm_dd_to_dd_mm_yyyy(s)
-          return nil unless s.is_a?(String) && s =~ /\A\d{4}-\d{2}-\d{2}\z/
-          y, m, d = s.split("-")
-          "#{d}/#{m}/#{y}"
         end
 
         # ---------------------------------------------------------------
