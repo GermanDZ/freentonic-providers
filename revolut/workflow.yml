@@ -167,8 +167,65 @@ api_client:
       path: "/cashback"
 
 extract:
-  ruby: ./extractor.rb
-  class: Freentonic::Providers::Revolut::Extractor
+  plan:
+    steps:
+      # Wallet — primary structure. NOT safe: a dead session must
+      # propagate (abort with "re-run connect"), never be masked into a
+      # partial payload.
+      - fetch: fetch_wallet
+        as: wallet
+      - select: { from: wallet, path: pockets, default: [] }
+        as: pockets
+
+      # Bank account details (IBANs) — one request per distinct pocket
+      # currency. Non-critical: a dead currency is skipped, not fatal.
+      - for_each:
+          source: pockets
+          pluck: currency
+          compact: true
+          uniq: true
+        as_item: currency
+        as: bank_details
+        do:
+          - fetch: fetch_bank_details
+            args: { currency: "{currency}" }
+            as: detail
+            safe: true
+          - yield: { currency: "{currency}", details: "{detail}" }
+            skip_if_nil: detail
+
+      # Cards + vaults — non-critical, nil-on-failure (no default:, to
+      # match the Ruby extractor which stored nil, not []).
+      - fetch: fetch_cards
+        as: cards
+        safe: true
+      - fetch: fetch_vaults
+        as: vaults
+        safe: true
+
+      # Transactions per pocket. Cursor pagination (initial cursor = now,
+      # cursor from last row's timestamp, stop on from_ms) is declared on
+      # fetch_pocket_transactions above — one fetch returns all rows.
+      - for_each:
+          source: pockets
+        as_item: pocket
+        as: pocket_transactions
+        collect: map
+        key: "{pocket.id}"
+        do:
+          - fetch: fetch_pocket_transactions
+            args: { pocket_id: "{pocket.id}", from_ms: "{from_ms}" }
+            as: txns
+            safe: true
+            default: []
+          - yield: "{txns}"
+    output:
+      wallet: "{wallet}"
+      pockets: "{pockets}"
+      bank_details: "{bank_details}"
+      cards: "{cards}"
+      vaults: "{vaults}"
+      pocket_transactions: "{pocket_transactions}"
 
 normalize:
   ruby: ./normalizer.rb
