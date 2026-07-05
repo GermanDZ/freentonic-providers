@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# ING extractor.
+# ING extractor — pure fetch orchestration.
 #
 # All products go through a single unified v2 endpoint on
 # api.ing.ingdirect.es: POST /v2/products/transactions/search. Both
@@ -37,33 +37,24 @@
 #    Numeric amount, ISO → DD/MM/YYYY dates, v2-seq stable-id
 #    synthesis) lives in the normalizer.
 #
-# Routing matrix:
-#
-#   Bearer captured?  Lookback > 90d?  Prompt store?  → Behavior
-#   ─────────────────────────────────────────────────────────────────
-#   yes               no               (don't care)   → /search, no SCA
-#   yes               yes              yes            → /search, with SCA
-#   yes               yes              no             → /search, no SCA + truncation warning
-#   no                (don't care)     (don't care)   → empty run, re-auth required
+# SCA elevation is NOT this extractor's job anymore. When the requested
+# lookback crosses ING's 90-day boundary (/search rejects older ranges
+# from a low-LoA Bearer as `moreSca: true`, silently truncating at the
+# boundary), the workflow's declarative `elevate:` phase runs the PSD2
+# handshake BEFORE extract — push approval on the operator's phone,
+# then a Bearer refresh rebound host-scoped onto the shared client (see
+# workflow.yml). On elevation failure the framework degrades: extract
+# runs with the captured low-LoA Bearer and history truncates at ~90d.
+# This extractor never mutates the session — it runs with whatever
+# Bearer the client carries.
 #
 # Bearer + X-ING-ExtendedSessionContext are JS-computed values the
 # bank's frontend puts on its outbound /position-keeping call, captured
-# by the workflow's capture_outbound_request_headers step. Auth is
-# always passed per-request to api.ing.ingdirect.es — never installed
-# globally — so an SCA failure can't poison subsequent calls. SCA
-# elevation (PSD2 push approval on operator's phone + Bearer refresh
-# via /saf/tpa/accesstoken/synchronize) is only attempted when
-# lookback > 90d, because that's the threshold above which /search
-# rejects requests as `moreSca: true` without an elevated
-# level-of-assurance. Short-lookback /search calls use the captured
-# (low-LoA) Bearer directly.
-#
-# Failures inside the /search path degrade in place rather than
-# switching id scheme: SCA timeout / Bearer refresh failure continue
-# with the captured non-elevated Bearer (history truncated at ~90d);
-# a /position-keeping failure aborts the run (no product list, nothing
-# to extract). Operator-facing error messages point at re-auth in the
-# cases that aren't recoverable mid-run.
+# by the workflow's capture_outbound_request_headers step and threaded
+# per-request to api.ing.ingdirect.es via the host-scoped auth_headers
+# block. A /position-keeping failure aborts the run (no product list,
+# nothing to extract); operator-facing error messages point at re-auth
+# in the cases that aren't recoverable mid-run.
 
 require "freentonic"
 
@@ -74,29 +65,7 @@ module Freentonic
         provider!(__dir__)
         # KIND_BY_PRODUCT_TYPE auto-defined from ing/config.yml.
 
-        # Lookback threshold above which we run SCA elevation. ING's
-        # /v2/products/transactions/search refuses date ranges older
-        # than 90 days from a low-LoA Bearer (signaled by
-        # `moreSca: true` in the response envelope; the server
-        # truncates the response at the 90d boundary). Threshold sits
-        # exactly at 90 so a 90d-lookback run still goes through
-        # without SCA — the elevation only fires when the operator
-        # actually wants history older than the silent cap.
-        SCA_ELEVATION_LOOKBACK_DAYS = 90
-
-        # Operator gets ~3 minutes to find their phone and approve.
-        SCA_PROMPT_TIMEOUT_SECONDS = 180
-
-        # The genoma_api SCA endpoints are still called via raw_request
-        # (the GET → operator prompt → PUT handshake is genuinely
-        # imperative), so we keep the legacy host URL handy.
-        ING_LEGACY_HOST  = "https://ing.ingdirect.es"
-        # Hostname (no scheme) used to scope update_auth_headers! to the
-        # api host after SCA mints a new Bearer.
-        ING_API_HOSTNAME = "api.ing.ingdirect.es"
-
-        def call(client:, credentials:, from_date:, stdout:, stderr:,
-                 remote_prompt_store: nil, run_dir: nil)
+        def call(client:, credentials:, from_date:, stdout:, stderr:)
           api_headers = credentials[:ing_api_headers].is_a?(Hash) ? credentials[:ing_api_headers] : {}
           unless api_headers["Authorization"].to_s.length.positive?
             raise Freentonic::UserError,
@@ -131,58 +100,27 @@ module Freentonic
           end
 
           lookback_days = (Date.today - from_date).to_i
-          perform_sca   = lookback_days > SCA_ELEVATION_LOOKBACK_DAYS && !remote_prompt_store.nil?
-          if lookback_days > SCA_ELEVATION_LOOKBACK_DAYS && remote_prompt_store.nil?
-            stderr.puts "  ⚠ Lookback #{lookback_days}d > #{SCA_ELEVATION_LOOKBACK_DAYS} but " \
-                        "no operator prompt store available; running /search without " \
-                        "elevation (history will be truncated at ING's #{SCA_ELEVATION_LOOKBACK_DAYS}-day silent boundary)."
-          end
-
-          stdout.puts "  /search path (lookback=#{lookback_days}d, sca=#{perform_sca})."
-          run_v2_path(client, from_date, stdout, stderr,
-                      remote_prompt_store, perform_sca: perform_sca)
+          stdout.puts "  /search path (lookback=#{lookback_days}d)."
+          run_v2_path(client, from_date, stdout, stderr)
         end
 
         private
 
         # ---------------------------------------------------------------
-        # /search path. `perform_sca:` toggles the PSD2 elevation
-        # handshake. The Bearer + ExtendedSessionContext are wired up
+        # /search path. The Bearer + ExtendedSessionContext are wired up
         # declaratively via the api_client's host-scoped auth_headers
-        # block — when SCA produces a fresh high-LoA Bearer we rotate
-        # it onto the client with
-        # `update_auth_headers!(host: "api.ing.ingdirect.es")` so the
-        # new value reaches the api host and ONLY the api host (the
-        # legacy host stays cookie-only for the SCA documentation
-        # handshake itself).
-        #
-        # Internal failures degrade in place — SCA timeout / Bearer
-        # refresh failure continue with the captured (low-LoA) Bearer
-        # and accept the ~90-day truncation. /position-keeping failure
-        # is the only unrecoverable case (no product list).
+        # block; if the elevate: phase ran, the client already carries
+        # the rebound high-LoA Bearer. /position-keeping failure is the
+        # only unrecoverable case (no product list).
         # ---------------------------------------------------------------
 
-        def run_v2_path(client, from_date, stdout, stderr, prompt_store, perform_sca:)
+        def run_v2_path(client, from_date, stdout, stderr)
           # /position-keeping is the source of the product list. Failure
           # here means we cannot enumerate any accounts — letting the run
           # continue would emit a successful 0-account payload that
           # downstream stores would treat as "all accounts deleted",
           # overwriting real history. Hard-abort instead.
           position = fetch_position_keeping(client, stdout, stderr)
-
-          if perform_sca
-            if attempt_sca_elevation(client, prompt_store, stdout, stderr)
-              new_bearer = refresh_bearer_after_sca(client, stdout, stderr)
-              if new_bearer
-                client.update_auth_headers!({ "Authorization" => "Bearer #{new_bearer}" },
-                                            host: ING_API_HOSTNAME)
-              else
-                stderr.puts "    ⚠ Bearer refresh failed; continuing with captured Bearer (history truncated at ~90d)."
-              end
-            else
-              stderr.puts "    ⚠ SCA elevation failed; continuing with captured Bearer (history truncated at ~90d)."
-            end
-          end
 
           uuid_map = build_uuid_map(position["products"])
           products = Array(position["legacyProducts"])
@@ -260,20 +198,6 @@ module Freentonic
                 "ExtendedSessionContext may be stale."
         end
 
-        def refresh_bearer_after_sca(client, stdout, stderr)
-          stdout.puts "  Refreshing Bearer after SCA elevation..."
-          resp = client.refresh_access_token
-          token = resp.dig("accessTokens", 0, "accessToken")
-          if token.to_s.empty?
-            stderr.puts "    ✗ Bearer refresh: response missing accessTokens[0].accessToken"
-            return nil
-          end
-          token
-        rescue StandardError => e
-          stderr.puts "    ✗ Bearer refresh failed: #{e.class}: #{e.message}"
-          nil
-        end
-
         # Walk position-keeping's modern products array, building
         # V1ID(LOCAL_UUID) → raw UUID. Skips products without a populated
         # UUID. Both asset and credit-card products are expected to
@@ -291,66 +215,6 @@ module Freentonic
             map[local] = uuid if local && uuid && !uuid.to_s.empty?
           end
           map
-        end
-
-        # Initiate the SCA challenge, prompt the operator, commit on
-        # approval. Cookie + bearer auth on the genoma host.
-        def attempt_sca_elevation(client, prompt_store, stdout, stderr)
-          doc = client.raw_request(
-            method:  :get,
-            path:    "/genoma_api/rest/sca/documentation",
-            headers: { "x-ing-reset-validations" => "1" },
-            base:    ING_LEGACY_HOST
-          )
-
-          acceptance = Array(doc["acceptanceMethods"]).first
-          unless acceptance
-            stderr.puts "    ✗ SCA elevation: no acceptanceMethods in /sca/documentation response"
-            return false
-          end
-
-          process_id = acceptance["securityProcessId"].to_s
-          if process_id.empty?
-            stderr.puts "    ✗ SCA elevation: no securityProcessId in /sca/documentation response"
-            return false
-          end
-
-          stdout.puts "  Awaiting operator approval (push notification on phone)..."
-          begin
-            prompt_store.prompt(
-              kind:            :confirm,
-              message:         sca_prompt_message(acceptance),
-              timeout_seconds: SCA_PROMPT_TIMEOUT_SECONDS
-            )
-          rescue Freentonic::RemotePromptStore::Timeout
-            stderr.puts "    ✗ SCA elevation: operator did not approve within " \
-                        "#{SCA_PROMPT_TIMEOUT_SECONDS}s"
-            return false
-          end
-
-          client.raw_request(
-            method:  :put,
-            path:    "/genoma_api/rest/sca/documentation",
-            headers: { "x-ing-securityprocessid" => process_id },
-            body:    { "processId" => process_id },
-            base:    ING_LEGACY_HOST
-          )
-
-          stdout.puts "    ✓ SCA elevation succeeded"
-          true
-        rescue StandardError => e
-          stderr.puts "    ✗ SCA elevation failed: #{e.class}: #{e.message}"
-          false
-        end
-
-        def sca_prompt_message(acceptance)
-          base = "ING is requesting Strong Customer Authentication to release " \
-                 "older transaction history. Open the ING app on your phone, " \
-                 "tap the pending notification, and approve. The sync will " \
-                 "automatically resume once approved."
-          code = acceptance["code"]
-          return base unless code
-          "#{base} (challenge: #{code})"
         end
 
         # ---------------------------------------------------------------
