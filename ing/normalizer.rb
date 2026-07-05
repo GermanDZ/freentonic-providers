@@ -3,7 +3,6 @@
 require "date"
 require "bigdecimal"
 require "freentonic"
-require_relative "extractor"
 
 module Freentonic
   module Providers
@@ -17,7 +16,7 @@ module Freentonic
 
         def call(raw, context: {})
           accounts, liabilities, transactions = [], [], []
-          products = Array(raw)
+          products, movements_by_uuid = unwrap_raw(raw)
           # Per-plastic credit-card balances, reconciled per revolving line.
           # Computed up front because the figure for any one plastic depends
           # on its line siblings (see #compute_cc_balances).
@@ -36,7 +35,7 @@ module Freentonic
               liabilities << build_loan_liability(product, account)
             end
 
-            Array(product["movements"]).each do |mv|
+            movements_for(product, movements_by_uuid).each do |mv|
               txn = build_transaction(product, account, translate_movement(mv))
               transactions << txn if txn
             end
@@ -53,6 +52,33 @@ module Freentonic
         end
 
         private
+
+        # Two raw shapes are accepted:
+        #  - the declarative extract plan's `{ "products" => [...],
+        #    "movements_by_uuid" => { local_uuid => [rows] } }`, where
+        #    movements live in a side map keyed by each product's local
+        #    uuid (the plan can't graft a key onto a product hash), and
+        #  - the legacy bare Array of products, each carrying its own
+        #    inline "movements" key — the shape the old extractor.rb
+        #    returned and the shape saved raw payloads (--from-raw) and
+        #    the fixtures still use.
+        # Returns [products, movements_by_uuid_or_nil]; a nil map signals
+        # the legacy inline shape to #movements_for.
+        def unwrap_raw(raw)
+          if raw.is_a?(Hash) && raw.key?("products")
+            [Array(raw["products"]), raw["movements_by_uuid"] || {}]
+          else
+            [Array(raw), nil]
+          end
+        end
+
+        # Movements for one product: from the side map (plan shape) keyed
+        # by the product's local uuid, or inline (legacy shape). A product
+        # the plan skipped has no map entry → [] → account-only, no txns.
+        def movements_for(product, movements_by_uuid)
+          rows = movements_by_uuid ? movements_by_uuid[product["uuid"]] : product["movements"]
+          Array(rows)
+        end
 
         # ---------------------------------------------------------------
         # Raw /v2/products/transactions/search row → legacy movement

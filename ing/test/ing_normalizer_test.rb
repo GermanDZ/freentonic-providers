@@ -3,7 +3,6 @@
 require "minitest/autorun"
 require "bigdecimal"
 require "freentonic"
-require_relative "../extractor"
 require_relative "../normalizer"
 
 class IngNormalizerTest < Minitest::Test

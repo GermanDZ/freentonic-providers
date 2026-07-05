@@ -306,9 +306,116 @@ elevate:
         host: api.ing.ingdirect.es
         value: "Bearer {refreshed.accessTokens.0.accessToken}"
 
+# Declarative extract — the zero-Ruby replacement for extractor.rb.
+# /position-keeping yields the product list; index_by builds the
+# V1ID→v2-UUID map that lookup: reads back per product to join ING's
+# two product lists (legacyProducts carry `type` for kind routing;
+# modern products carry the UUID identifiers). Movements land in a
+# uuid→rows map (keyed by each product's local uuid) attached VERBATIM;
+# all shape translation (String→Numeric amounts, ISO→DD/MM/YYYY dates,
+# v2-seq stable-id synthesis) stays in the normalizer, which joins the
+# map back onto each product.
+#
+# Two accepted residues from the old Ruby (see the Ask 6 migration
+# note in docs/ing-declarative-framework-asks.md):
+#  - The Bearer-missing preflight collapses into /position-keeping's
+#    on_error abort — same operator outcome, one HTTP round-trip. The
+#    XSRF-cookie warning is dropped (credentials are not in plan scope).
+#  - Product routing enumerates the known-skip type ints (1 debit,
+#    42 investment, 77 loan) as skip_when steps instead of the old
+#    kind whitelist. It fails OPEN for genuinely new types (they get
+#    fetched, safe:-degraded, and the normalizer drops any with a nil
+#    kind) — acceptable and loud in the run log.
 extract:
-  ruby: ./extractor.rb
-  class: Freentonic::Providers::Ing::Extractor
+  plan:
+    steps:
+      # /position-keeping is the product list. Failure is fatal: a
+      # missing list would emit a successful 0-account payload that
+      # downstream stores read as "all accounts deleted", overwriting
+      # real history. A missing/stale Bearer surfaces here too (the old
+      # explicit credential preflight now collapses into this abort).
+      - fetch: fetch_position_keeping
+        as: position
+        on_error:
+          abort: "ING extract: /position-keeping failed — without the product list the run cannot continue. Re-run after a fresh login; if it persists, the captured Bearer / ExtendedSessionContext may be stale."
+      - select: { from: position, path: legacyProducts }
+        as: products
+      # A 200 with no legacyProducts array (malformed body / stale
+      # session) is as fatal as a network failure: an empty product list
+      # emits a 0-account payload that downstream stores read as "all
+      # accounts deleted". No default: on the select above, so a missing
+      # array binds nil and this abort fires. An empty-but-present array
+      # is legitimate (a user with no products) and passes through.
+      - abort: "ING extract: /position-keeping returned no legacyProducts array — the product list is unknown and the run cannot continue. Re-run after a fresh login."
+        when: { products: { absent: true } }
+      - select: { from: position, path: products, default: [] }
+        as: modern_products
+
+      # V1ID(LOCAL_UUID) → v2 UUID. index_by builds it; lookup reads it
+      # back per product below. A modern product missing either id drops
+      # out of the map, so its lookup misses and the product is skipped
+      # loudly rather than silently re-routed to the retired /movements.
+      - index_by:
+          from: modern_products
+          key:   { path: identifiers, where: { type: LOCAL_UUID }, pick: value }
+          value: { path: identifiers, where: { type: UUID },       pick: value }
+        as: uuid_map
+
+      # Per-product /search — ONE CALL PER UUID. A multi-UUID body flips
+      # ING into a sign-stripping "summary" format; a single-UUID body
+      # keeps the detailed signed shape that matches the bank's XLS
+      # export (verified live 2026-05-22; see API-NOTES.md). Rows attach
+      # VERBATIM into a uuid→rows map keyed by the product's local uuid;
+      # the normalizer joins and translates. A product that is skipped
+      # (no v2 UUID, or a skip-listed type) simply gets no map entry, so
+      # the normalizer still emits its account (balance-only) with no
+      # transactions.
+      - for_each:
+          source: products
+        as_item: product
+        as: movements_by_uuid
+        collect: map
+        key: "{product.uuid}"
+        do:
+          - select: { from: product, path: type }
+            as: type
+          - lookup: { from: uuid_map, key: "{product.uuid}" }
+            as: v2_uuid
+
+          # No stable v2 UUID → no stable id path. Skip loudly.
+          - warn: "No v2 UUID for {product.alias} (local={product.uuid}) — skipping extraction."
+            when: { v2_uuid: { absent: true } }
+          - skip_when: { v2_uuid: { absent: true } }
+
+          # Debit cards (type 1): not balance-bearing; the normalizer
+          # drops them (kind=null). No point fetching.
+          - skip_when: { type: { eq: 1 } }
+
+          # Investment (type 42, Cuenta de valores): /search returns 401
+          # for investment UUIDs and poisons any multi-UUID batch. Skip
+          # the fetch; the account still flows through /position-keeping.
+          - note: "Skipping {product.alias} (kind=investment): /search 401s on investment UUIDs."
+            when: { type: { eq: 42 } }
+          - skip_when: { type: { eq: 42 } }
+
+          # Loans (type 77): amortization isn't in /search; payments post
+          # on the linked account. Balance-only.
+          - note: "Serving {product.alias} balance-only (kind=loan)."
+            when: { type: { eq: 77 } }
+          - skip_when: { type: { eq: 77 } }
+
+          - fetch: fetch_v2_search
+            args:
+              uuids:     ["{v2_uuid}"]
+              from_date: "{from_date}"
+              to_date:   "{today}"
+            as: rows
+            safe: true
+            default: []
+          - yield: "{rows}"
+    output:
+      products: "{products}"
+      movements_by_uuid: "{movements_by_uuid}"
 
 normalize:
   ruby: ./normalizer.rb
