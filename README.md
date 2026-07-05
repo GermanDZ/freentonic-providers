@@ -8,11 +8,11 @@ sibling Ruby files (`extractor.rb`, `normalizer.rb`) it references.
 
 ## Providers
 
-| Provider  | Directory      | Status | Notes                                               |
-| --------- | -------------- | ------ | --------------------------------------------------- |
-| ING España | [`ing/`](ing)     | v1     | Drives the legacy `genoma_api` endpoint.            |
-| Unicaja    | [`unicaja/`](unicaja) | v1     | Drives the Univia REST API. Requires `tokencsrf`.   |
-| Revolut    | [`revolut/`](revolut) | v1     | Drives the Revolut retail API. Cookie auth + app push 2FA. |
+| Provider  | Directory      | Status | Extract | Notes                                               |
+| --------- | -------------- | ------ | ------- | --------------------------------------------------- |
+| ING España | [`ing/`](ing)     | v1     | Ruby    | Drives the legacy `genoma_api` endpoint. Stays imperative — Bearer rotation, operator-approval SCA, and `raw_request` handshakes are outside the plan grammar by design. |
+| Unicaja    | [`unicaja/`](unicaja) | v1     | Ruby    | Drives the Univia REST API. Requires `tokencsrf`. Plan-migratable once `when:` / `dedup_by:` verbs land. |
+| Revolut    | [`revolut/`](revolut) | v1     | Plan    | Drives the Revolut retail API. Cookie auth + app push 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — no `extractor.rb`. |
 
 ## Usage
 
