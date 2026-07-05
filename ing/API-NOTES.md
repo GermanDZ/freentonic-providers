@@ -195,15 +195,18 @@ Bearer (signaled by `moreSca: true` in the response envelope; the
 server truncates the response at the boundary rather than
 erroring).
 
-`SCA_ELEVATION_LOOKBACK_DAYS` in `ing/extractor.rb` is set to 90.
-When lookback exceeds the threshold AND a remote prompt store is
-available, the extractor runs the PSD2 handshake against the
+The threshold lives in `ing/workflow.yml`'s `elevate:` block
+(`when: { lookback_days: { gt: 90 } }`). When lookback exceeds it,
+the declarative elevate phase runs the PSD2 handshake against the
 genoma legacy host (`/genoma_api/rest/sca/documentation` GET →
 operator approves on phone → PUT) and refreshes the Bearer via
 `/saf/tpa/accesstoken/synchronize`. The new high-LoA Bearer is
-rotated onto the client scoped to `api.ing.ingdirect.es` only —
-never installed globally — so an SCA failure can't poison
-subsequent calls.
+rebound onto the shared client scoped to `api.ing.ingdirect.es`
+only — never installed globally — so an SCA failure can't poison
+subsequent calls. `on_failure: degrade` means any failure in the
+handshake (push timeout, no operator channel, empty refreshed
+token) warns and continues un-elevated: extract still runs, with
+history truncated at the ~90-day boundary.
 
 ## Response envelope (`/search`)
 
@@ -279,8 +282,15 @@ strong tell for (4); zero rows everywhere is more often (1) or (2).
 - `test_v2_search_per_uuid_keeps_rows_isolated_per_product`: pins
   the per-UUID call shape. Reverting to multi-UUID batching fails
   this test immediately.
-- `test_short_lookback_uses_search_without_sca`: asserts N products
+- `test_search_path_fetches_per_product`: asserts N products
   produce N `/search` calls. Same regression pin.
+- `test_extractor_never_mutates_session_even_on_long_lookback`:
+  pins that SCA lives exclusively in the `elevate:` phase — the
+  extractor must never call `raw_request` or rotate auth headers.
+- `ing_elevate_phase_test.rb`: pins the declarative SCA wiring —
+  the 90-day gate, challenge → approval → commit → refresh →
+  rebind order, the `securityProcessId` data-flow, and the
+  api-host scoping of the rebound Bearer.
 - `test_v2_search_signed_amounts_round_trip_to_numeric`: pins that
   signed String amounts coerce to signed Numerics through to the
   normalizer.

@@ -140,8 +140,9 @@ api_client:
     - resultList
   date_format: "%d/%m/%Y"
   # Two hosts with different auth scopes:
-  #   - ing.ingdirect.es        → legacy cookie-only endpoints (SCA
-  #     documentation handshake; imperative, not declared here).
+  #   - ing.ingdirect.es        → legacy cookie-only endpoints (the SCA
+  #     documentation handshake, declared below and driven by the
+  #     elevate: phase).
   #   - api.ing.ingdirect.es    → v2 endpoints (assets + credit cards),
   #     additionally signed with the JS-computed Bearer +
   #     ExtendedSessionContext captured by the workflow's
@@ -225,8 +226,8 @@ api_client:
     #    is what we needed; pending-status fidelity for CC rows is
     #    cosmetic for our consumers.
     #  - SCA elevation boundary is 90 days here (vs the ~52d silent
-    #    truncation of /v2/products/{uuid}/transactions); see
-    #    SCA_ELEVATION_LOOKBACK_DAYS in extractor.rb.
+    #    truncation of /v2/products/{uuid}/transactions); see the
+    #    elevate: block's when: gate below.
     - name: fetch_v2_search
       method: POST
       base:   "https://api.ing.ingdirect.es"
@@ -242,13 +243,68 @@ api_client:
       limit: 100
       response:
         extract_batch: [transactions]
-    # SCA refresh — api host. The SCA documentation endpoints stay
-    # imperative in the extractor (operator prompt is genuinely
-    # imperative); only the post-SCA Bearer-refresh is declarative.
+    # SCA session-elevation endpoints — consumed by the elevate: phase
+    # below, never by the extract path.
+    #
+    # The documentation handshake lives on the legacy host (default
+    # base_url, cookie auth): GET initiates the challenge — the
+    # x-ing-reset-validations header forces a fresh push even when a
+    # stale process is pending — and PUT commits it once the operator
+    # approves on their phone.
+    - name: sca_documentation_challenge
+      method: GET
+      path:   "/genoma_api/rest/sca/documentation"
+      headers:
+        x-ing-reset-validations: "1"
+    - name: sca_documentation_commit
+      method: PUT
+      path:   "/genoma_api/rest/sca/documentation"
+      headers:
+        x-ing-securityprocessid: "{process_id}"
+      json:
+        processId: "{process_id}"
+    # Post-SCA Bearer refresh — api host. Mints the elevated (high-LoA)
+    # access token that rebind_credential installs.
     - name: refresh_access_token
       method: GET
       base:   "https://api.ing.ingdirect.es"
       path:   "/saf/tpa/accesstoken/synchronize"
+
+# Session elevation — the PSD2 SCA handshake that used to live in
+# extractor.rb (attempt_sca_elevation + refresh_bearer_after_sca).
+# /search rejects date ranges older than 90 days from a low-LoA Bearer
+# (`moreSca: true`, silently truncating at the boundary), so elevation
+# is only worth the operator round-trip when the requested lookback
+# actually crosses it — the when: gate skips the whole phase otherwise.
+#
+# on_failure: degrade encodes ING's behavior matrix verbatim: an SCA
+# push timeout, a missing securityProcessId, an absent operator channel
+# or an empty refreshed token all warn and continue with the captured
+# low-LoA Bearer (history truncates at ~90d) instead of failing the
+# run. On degrade the framework discards the half-elevated client, so
+# extract rebuilds a pristine one from the captured credentials.
+elevate:
+  when: { lookback_days: { gt: 90 } }
+  on_failure: degrade
+  steps:
+    - fetch: sca_documentation_challenge
+      as: challenge
+    - await_operator_approval:
+        message: "ING is requesting Strong Customer Authentication to release older transaction history. Open the ING app on your phone, tap the pending notification, and approve. The sync will automatically resume once approved. (challenge: {challenge.acceptanceMethods.0.code})"
+        timeout: 180
+    - fetch: sca_documentation_commit
+      args: { process_id: "{challenge.acceptanceMethods.0.securityProcessId}" }
+    # The commit raises the session's level of assurance server-side;
+    # synchronize exchanges it for the elevated Bearer.
+    - fetch: refresh_access_token
+      as: refreshed
+    # Host-scoped: the new Bearer must reach api.ing.ingdirect.es and
+    # ONLY the api host — the legacy host stays cookie-only (its edge
+    # rejects requests carrying a wrong-scope Bearer).
+    - rebind_credential:
+        header: Authorization
+        host: api.ing.ingdirect.es
+        value: "Bearer {refreshed.accessTokens.0.accessToken}"
 
 extract:
   ruby: ./extractor.rb

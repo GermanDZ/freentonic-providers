@@ -10,7 +10,7 @@ sibling Ruby files (`extractor.rb`, `normalizer.rb`) it references.
 
 | Provider  | Directory      | Status | Extract | Notes                                               |
 | --------- | -------------- | ------ | ------- | --------------------------------------------------- |
-| ING España | [`ing/`](ing)     | v1     | Ruby    | Drives the legacy `genoma_api` endpoint. Stays imperative — Bearer rotation, operator-approval SCA, and `raw_request` handshakes are outside the plan grammar by design. |
+| ING España | [`ing/`](ing)     | v1     | Ruby (orchestration only) | Drives the v2 `/search` API. SCA is declarative: the workflow's `elevate:` phase runs the PSD2 handshake (operator push approval + host-scoped Bearer rebind) when lookback > 90d. The slim `extractor.rb` only orchestrates fetches — no `raw_request`, no session mutation. |
 | Unicaja    | [`unicaja/`](unicaja) | v1     | Plan    | Drives the Univia REST API. Requires `tokencsrf`. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — a `when:` gate drives the >30-day extended-history fetch, `dedup_by:` merges the two movement endpoints. The credit/debit filter lives in the normalizer. No `extractor.rb`. |
 | Revolut    | [`revolut/`](revolut) | v1     | Plan    | Drives the Revolut retail API. Cookie auth + app push 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — no `extractor.rb`. |
 | Fintonic   | [`fintonic/`](fintonic) | v1   | Plan    | Drives the Fintonic REST API. Bearer auth + SMS 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — offset pagination on the endpoint, `concat:` + `dedup_by:` for the read/unread merge. No `extractor.rb`. |
