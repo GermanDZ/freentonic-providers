@@ -656,6 +656,137 @@ class IngNormalizerTest < Minitest::Test
     assert_equal 2, payload.transactions.size
   end
 
+  # --- raw /v2 /search row translation -----------------------------------
+  #
+  # The extractor attaches /search rows VERBATIM (String amounts, ISO
+  # dates, transactionId envelope); the normalizer owns the translation
+  # to the legacy movement shape. These pins moved here from
+  # ing_extractor_test.rb when the translation moved.
+
+  def raw_search_card_row(overrides = {})
+    {
+      "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 618803278 },
+      "transactionDate" => "2026-05-19",
+      "description" => "WWW.AMAZON* NA43U4RA4          LUXEMBOURG     ",
+      "subcategoryId" => "64",
+      "amount" => "-26.59",
+      "transactionCode" => "TCTPV",
+      "balance" => 3862.36,
+      "transactionLocalUUID" => "___V1ID___nonceX___V1ID___",
+      "mode" => "P"
+    }.merge(overrides)
+  end
+
+  def test_v2_search_card_row_translates_to_canonical
+    payload = normalizer.call([credit_card_product("movements" => [raw_search_card_row])])
+    txn = payload.transactions.first
+
+    refute_nil txn
+    # Stable id derived from transactionId, NOT transactionLocalUUID.
+    assert_equal "v2-seq:raw-card-uuid:618803278", txn.source_id
+    assert_equal Date.new(2026, 5, 19), txn.date
+    # String → Numeric coercion; sign survives.
+    assert_equal BigDecimal("-26.59"), txn.amount
+    assert_equal "EUR", txn.currency
+    # /search omits the status hash → rows normalize as posted.
+    assert_equal "posted", txn.status
+    # Provider metadata carries the translated legacy field names.
+    assert_equal "v2-seq:raw-card-uuid:618803278", txn.metadata["ing"]["uuid"]
+    assert_equal "TCTPV", txn.metadata["ing"]["tranCode"]
+    assert_equal "19/05/2026", txn.metadata["ing"]["effectiveDate"]
+  end
+
+  def test_v2_search_asset_concept_becomes_store_disambiguator
+    row = raw_search_card_row(
+      "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 4511 },
+      "transactionDate" => "2026-05-21",
+      "description" => "Recibo REALE SEGUROS GENERALES, S.A.",
+      "amount" => "-151.70",
+      "transactionCode" => "RECIBSEPA",
+      "concept" => "690040092289POL.003022500138"
+    )
+    payload = normalizer.call([asset_product("movements" => [row])])
+    txn = payload.transactions.first
+
+    assert_equal "v2-seq:raw-asset-uuid:4511", txn.source_id
+    assert_equal BigDecimal("-151.70"), txn.amount
+    # `concept` maps to the legacy `store` sub-line, which the
+    # description join surfaces as the disambiguator.
+    assert_equal "Recibo REALE SEGUROS GENERALES, S.A. — 690040092289POL.003022500138",
+                 txn.description
+  end
+
+  def test_v2_search_signed_string_amounts_survive
+    purchase = raw_search_card_row(
+      "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 9379797550 },
+      "amount" => "-1331.47", "description" => "Prusa Research"
+    )
+    refund = raw_search_card_row(
+      "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 9378944890 },
+      "amount" => "26.59", "description" => "WWW.AMAZON REFUND"
+    )
+    payload = normalizer.call([credit_card_product("movements" => [purchase, refund])])
+
+    amounts = payload.transactions.map(&:amount).sort
+    assert_equal [BigDecimal("-1331.47"), BigDecimal("26.59")], amounts
+  end
+
+  # If ING ever omits transactionId, the stable id is nil and the row
+  # is dropped. We'd rather lose a row than synthesise an unstable
+  # fallback id and re-introduce the dup class.
+  def test_v2_search_row_missing_transaction_id_is_dropped
+    row = raw_search_card_row
+    row.delete("transactionId")
+    payload = normalizer.call([credit_card_product("movements" => [row])])
+    assert_empty payload.transactions
+  end
+
+  # Float() parses strictly — a malformed amount becomes a dropped row
+  # rather than a phantom 0.0 transaction.
+  def test_v2_search_garbage_amount_is_dropped
+    payload = normalizer.call(
+      [credit_card_product("movements" => [raw_search_card_row("amount" => "N/A")])]
+    )
+    assert_empty payload.transactions
+  end
+
+  # Regression pin for the dup class the /search migration fixed: the
+  # same ledger row keeps its transactionSequence across description
+  # enrichment (transactionLocalUUID is a per-request nonce and churns).
+  # Both rows translate to the same source_id, and the pre-clearing
+  # collapse keeps the enriched one.
+  def test_v2_search_terse_and_enriched_same_sequence_collapse_to_one
+    terse = raw_search_card_row(
+      "description" => "WWW.AMAZON",
+      "transactionLocalUUID" => "___V1ID___terse___V1ID___"
+    )
+    enriched = raw_search_card_row(
+      "description" => "WWW.AMAZON* NA43U4RA4 LUXEMBOURG",
+      "transactionLocalUUID" => "___V1ID___enriched___V1ID___"
+    )
+    payload = normalizer.call([credit_card_product("movements" => [terse, enriched])])
+
+    assert_equal 1, payload.transactions.size
+    txn = payload.transactions.first
+    assert_equal "v2-seq:raw-card-uuid:618803278", txn.source_id
+    assert_includes txn.description, "LUXEMBOURG"
+  end
+
+  # --from-raw compatibility: payloads saved before the translation
+  # moved carry already-translated movements (top-level `uuid`). The
+  # shape guard must pass those through untouched, even mixed with raw
+  # rows in the same product.
+  def test_legacy_and_raw_movements_mix_in_one_product
+    legacy = asset_movement("uuid" => "mv-legacy", "amount" => -5.0)
+    raw    = raw_search_card_row(
+      "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 77 }
+    )
+    payload = normalizer.call([asset_product("movements" => [legacy, raw])])
+
+    source_ids = payload.transactions.map(&:source_id).sort
+    assert_equal ["mv-legacy", "v2-seq:raw-asset-uuid:77"], source_ids
+  end
+
   def test_wire_format_money_is_string_no_cents_keys
     payload = normalizer.call([asset_product("movements" => [asset_movement])])
     wire = payload.to_h

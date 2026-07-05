@@ -146,8 +146,9 @@ class IngExtractorTest < Minitest::Test
 
   # Generate /search-shape rows. Note: `amount` is emitted as a
   # STRING here, matching what the real ING /search endpoint returns
-  # — the extractor must coerce. kind: distinguishes asset (has
-  # `concept`) from card (no `concept`).
+  # — the extractor attaches rows verbatim; shape translation lives
+  # in the normalizer. kind: distinguishes asset (has `concept`)
+  # from card (no `concept`).
   def v2_search_rows(count:, latest_date:, raw_uuid:, start_seq: 1, kind: :asset)
     (0...count).map do |i|
       d = latest_date - i
@@ -363,9 +364,12 @@ class IngExtractorTest < Minitest::Test
     card  = products.find { |p| p["uuid"] == "p-card"  }
     assert_equal 250, asset["movements"].size
     assert_equal 30,  card["movements"].size
+    # Rows attach VERBATIM — ISO date, String amount, untranslated.
+    # Shape translation is the normalizer's job.
     sample = asset["movements"].first
-    assert_match %r{\A\d{2}/\d{2}/\d{4}\z}, sample["effectiveDate"]
-    assert sample["_v2_source"]
+    assert_match %r{\A\d{4}-\d{2}-\d{2}\z}, sample["transactionDate"]
+    assert_kind_of String, sample["amount"]
+    assert_equal "raw-asset-uuid", sample.dig("transactionId", "productId")
   end
 
   # --- Per-product isolation ---------------------------------------
@@ -397,15 +401,16 @@ class IngExtractorTest < Minitest::Test
     asset = products.find { |p| p["uuid"] == "p-asset" }
     card  = products.find { |p| p["uuid"] == "p-card"  }
 
-    # Every asset movement's v2-seq carries the asset productId; every
-    # card movement's carries the card productId. No cross-contamination.
+    # Every asset movement's transactionId carries the asset productId;
+    # every card movement's carries the card productId. No
+    # cross-contamination.
     asset["movements"].each do |mv|
-      assert mv["uuid"].start_with?("v2-seq:raw-asset-uuid:"),
-             "asset movement #{mv["uuid"]} leaked to wrong product"
+      assert_equal "raw-asset-uuid", mv.dig("transactionId", "productId"),
+                   "asset movement #{mv.inspect} leaked to wrong product"
     end
     card["movements"].each do |mv|
-      assert mv["uuid"].start_with?("v2-seq:raw-card-uuid:"),
-             "card movement #{mv["uuid"]} leaked to wrong product"
+      assert_equal "raw-card-uuid", mv.dig("transactionId", "productId"),
+                   "card movement #{mv.inspect} leaked to wrong product"
     end
     assert_equal 5, asset["movements"].size
     assert_equal 3, card["movements"].size
@@ -596,17 +601,17 @@ class IngExtractorTest < Minitest::Test
     assert_equal [], card["movements"]
   end
 
-  # --- /search row shape coercion ----------------------------------
+  # --- /search rows attach verbatim ---------------------------------
 
-  # /search emits `amount` as a String ("-26.59"); the normalizer
-  # requires a Numeric (drops rows with non-Numeric amounts). The
-  # coercion converts in-place during the legacy-shape translation.
-  def test_v2_search_row_shape_coercion_card
+  # The extractor performs NO shape translation: /search rows land in
+  # product["movements"] byte-identical to what the endpoint returned
+  # (String amounts, ISO dates, transactionId envelope intact). All
+  # translation — String → Numeric amount, ISO → DD/MM/YYYY dates,
+  # v2-seq stable-id synthesis — is pinned in ing_normalizer_test.rb.
+  def test_v2_search_rows_attach_verbatim
     client = StubClient.new
     client.position_keeping_response = position_keeping_response(asset_uuids: {})
-    # A card row exactly as ING returns it (no `concept`, no
-    # `status` hash, amount as String, mode at root).
-    client.v2_search_rows_by_uuid["raw-card-uuid"] = [{
+    raw_row = {
       "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 618803278 },
       "transactionDate" => "2026-05-19",
       "description" => "WWW.AMAZON* NA43U4RA4          LUXEMBOURG     ",
@@ -616,7 +621,8 @@ class IngExtractorTest < Minitest::Test
       "balance" => 3862.36,
       "transactionLocalUUID" => "___V1ID___nonceX___V1ID___",
       "mode" => "P"
-    }]
+    }
+    client.v2_search_rows_by_uuid["raw-card-uuid"] = [raw_row]
     prompt = StubPromptStore.new
 
     products = extractor.call(
@@ -627,145 +633,7 @@ class IngExtractorTest < Minitest::Test
     )
 
     mv = products.find { |p| p["uuid"] == "p-card" }["movements"].first
-    # Stable id derived from transactionId, NOT transactionLocalUUID.
-    assert_equal "v2-seq:raw-card-uuid:618803278", mv["uuid"]
-    assert_equal "___V1ID___nonceX___V1ID___",     mv["_v2_transactionLocalUUID"]
-    assert_equal "19/05/2026",                     mv["effectiveDate"]
-    # String → Float coercion. Use in_delta because the lossy
-    # decimal-to-float round-trip can introduce sub-cent noise.
-    assert_kind_of Numeric, mv["amount"]
-    assert_in_delta -26.59, mv["amount"], 0.0001
-    assert_equal "TCTPV",                          mv["tranCode"]
-    assert_nil   mv["store"]                        # no `concept` on CC rows
-    assert_nil   mv["status"]                       # /search omits status hash
-    assert_equal "EUR",                            mv["currency"]
-    assert mv["_v2_source"]
-    assert_equal "search",   mv["_v2_kind"]
-    assert_equal 618803278,  mv["_v2_transactionSequence"]
-    assert_equal "P",        mv["_v2_mode"]
-  end
-
-  def test_v2_search_row_shape_coercion_asset
-    client = StubClient.new
-    client.position_keeping_response = position_keeping_response(card_uuids: {})
-    # Asset row mirrors the live shape: present `concept`, String
-    # amount, RECIBSEPA transactionCode.
-    client.v2_search_rows_by_uuid["raw-asset-uuid"] = [{
-      "transactionId" => { "productId" => "raw-asset-uuid", "transactionSequence" => 4511 },
-      "transactionDate" => "2026-05-21",
-      "description" => "Recibo REALE SEGUROS GENERALES, S.A.",
-      "subcategoryId" => "807",
-      "amount" => "-151.70",
-      "transactionCode" => "RECIBSEPA",
-      "concept" => "690040092289POL.003022500138",
-      "balance" => 211.71,
-      "transactionLocalUUID" => "___V1ID___assetX___V1ID___",
-      "mode" => "P"
-    }]
-    prompt = StubPromptStore.new
-
-    products = extractor.call(
-      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
-      from_date: SHORT_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
-      remote_prompt_store: prompt
-    )
-
-    mv = products.find { |p| p["uuid"] == "p-asset" }["movements"].first
-    assert_equal "v2-seq:raw-asset-uuid:4511",                 mv["uuid"]
-    assert_equal "21/05/2026",                                 mv["effectiveDate"]
-    assert_in_delta -151.70, mv["amount"], 0.0001
-    assert_equal "Recibo REALE SEGUROS GENERALES, S.A.",       mv["description"]
-    # Asset rows carry `concept` → the normalizer joins it onto
-    # `description` as the sub-line disambiguator.
-    assert_equal "690040092289POL.003022500138",               mv["store"]
-    assert_equal "RECIBSEPA",                                  mv["tranCode"]
-    assert_equal "search", mv["_v2_kind"]
-  end
-
-  # Regression pin for the dup class the migration fixes: under the
-  # legacy /movements endpoint, two fetches of the same pending row
-  # returned different transactionLocalUUIDs and produced two canonical
-  # txn_<hex>. Under /search, the same ledger row keeps its
-  # transactionSequence across description enrichment, so two coerced
-  # rows collapse to the same `uuid`.
-  def test_v2_search_same_sequence_different_local_uuid_collapses_to_one
-    client = StubClient.new
-    client.position_keeping_response = position_keeping_response(asset_uuids: {})
-    client.v2_search_rows_by_uuid["raw-card-uuid"] = [
-      {
-        "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 618803278 },
-        "amount" => "-26.59", "description" => "WWW.AMAZON",
-        "transactionDate" => "2026-05-19", "transactionCode" => "TCTPV",
-        "transactionLocalUUID" => "___V1ID___terse___V1ID___",
-        "mode" => "P"
-      },
-      {
-        "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 618803278 },
-        "amount" => "-26.59", "description" => "WWW.AMAZON* NA43U4RA4 LUXEMBOURG",
-        "transactionDate" => "2026-05-19", "transactionCode" => "TCTPV",
-        "transactionLocalUUID" => "___V1ID___enriched___V1ID___",
-        "mode" => "P"
-      }
-    ]
-    prompt = StubPromptStore.new
-
-    products = extractor.call(
-      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
-      from_date: SHORT_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
-      remote_prompt_store: prompt
-    )
-
-    uuids = products.find { |p| p["uuid"] == "p-card" }["movements"].map { |mv| mv["uuid"] }
-    assert_equal ["v2-seq:raw-card-uuid:618803278",
-                  "v2-seq:raw-card-uuid:618803278"], uuids
-    # The local-uuid divergence is still observable for debugging.
-    local_uuids = products.find { |p| p["uuid"] == "p-card" }["movements"]
-                          .map { |mv| mv["_v2_transactionLocalUUID"] }
-    assert_equal ["___V1ID___terse___V1ID___", "___V1ID___enriched___V1ID___"], local_uuids
-  end
-
-  # If ING ever omits transactionId, the row gets `uuid: nil` and the
-  # normalizer drops it. We'd rather lose a row than synthesise an
-  # unstable id and re-introduce the dup bug.
-  def test_v2_search_missing_transaction_id_emits_nil_uuid
-    client = StubClient.new
-    client.position_keeping_response = position_keeping_response(card_uuids: {})
-    client.raw_responses["/genoma_api/rest/sca/documentation"] = [sca_doc_response, {}]
-    client.refresh_token_response = access_token_response
-    client.v2_search_rows_by_uuid["raw-asset-uuid"] = [{
-      # No "transactionId" at all — simulates a malformed row that
-      # somehow slipped past the API edge. With per-UUID /search we
-      # know which product the row belongs to (the one we asked
-      # for), so the row IS attached to the asset product's
-      # movements — but v2_stable_uuid emits nil for missing
-      # transactionId.{productId, transactionSequence}, and the
-      # normalizer drops rows with nil uuid. That's the lose-a-row
-      # contract (preferred over synthesising an unstable fallback
-      # id that would re-introduce the dup class).
-      "amount" => "-10.0", "balance" => 0.0,
-      "description" => "TX", "transactionDate" => "2026-04-15",
-      "transactionCode" => "TRANS",
-      "transactionLocalUUID" => "fallback-uuid",
-      "mode" => "P"
-    }]
-    prompt = StubPromptStore.new
-
-    products = extractor.call(
-      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
-      from_date: LONG_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
-      remote_prompt_store: prompt
-    )
-
-    # The malformed row reaches the asset product (per-UUID — no
-    # demux to drop it earlier) but its uuid is nil, which the
-    # normalizer treats as "drop this row" downstream. Pinning the
-    # nil-uuid invariant is what protects canonical from a phantom.
-    mv = products.first["movements"].first
-    refute_nil mv, "row should still appear in movements; normalizer will drop it"
-    assert_nil mv["uuid"], "missing transactionId must produce nil uuid"
+    assert_equal raw_row, mv, "row must attach untranslated"
   end
 
   # --- r3 regression pin: re-extracting the same /search fixture
@@ -786,49 +654,6 @@ class IngExtractorTest < Minitest::Test
 
     assert_equal movement_uuids(a), movement_uuids(b)
     refute_empty movement_uuids(a)
-  end
-
-  # /search returns signed string amounts ("-1331.47" for purchases,
-  # "26.59" for refunds) when called with a single-UUID array —
-  # which is what the extractor does (one call per product). String
-  # → Float coercion happens in coerce_amount; signs survive.
-  def test_v2_search_signed_amounts_round_trip_to_numeric
-    client = StubClient.new
-    client.position_keeping_response = position_keeping_response(asset_uuids: {})
-    client.v2_search_rows_by_uuid["raw-card-uuid"] = [
-      # Purchase: negative signed string
-      {
-        "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 9379797550 },
-        "transactionDate" => "2026-05-21",
-        "description" => "Prusa Research           ",
-        "amount" => "-1331.47",
-        "transactionCode" => "TCTPV",
-        "mode" => "P"
-      },
-      # Refund: positive signed string
-      {
-        "transactionId" => { "productId" => "raw-card-uuid", "transactionSequence" => 9378944890 },
-        "transactionDate" => "2026-05-21",
-        "description" => "WWW.AMAZON* NA43U4RA4          LUXEMBOURG     ",
-        "amount" => "26.59",
-        "transactionCode" => "TCCR",
-        "mode" => "P"
-      }
-    ]
-    prompt = StubPromptStore.new
-
-    products = extractor.call(
-      client: client, credentials: { ing_api_headers: CAPTURED_HEADERS },
-      from_date: SHORT_LOOKBACK,
-      stdout: StringIO.new, stderr: StringIO.new,
-      remote_prompt_store: prompt
-    )
-
-    movements = products.find { |p| p["uuid"] == "p-card" }["movements"]
-    purchase = movements.find { |mv| mv["_v2_transactionSequence"] == 9379797550 }
-    refund   = movements.find { |mv| mv["_v2_transactionSequence"] == 9378944890 }
-    assert_in_delta -1331.47, purchase["amount"], 0.0001
-    assert_in_delta    26.59, refund["amount"],   0.0001
   end
 
   # Investment products (Cuenta de valores, ING type 42) are silently
@@ -903,7 +728,14 @@ class IngExtractorTest < Minitest::Test
     client
   end
 
+  # Raw rows carry no synthesized uuid — the stable identity across
+  # extractions is the (productId, transactionSequence) pair.
   def movement_uuids(products)
-    products.flat_map { |p| Array(p["movements"]).map { |mv| mv["uuid"] } }
+    products.flat_map do |p|
+      Array(p["movements"]).map do |mv|
+        [mv.dig("transactionId", "productId"),
+         mv.dig("transactionId", "transactionSequence")]
+      end
+    end
   end
 end
