@@ -10,18 +10,20 @@ architecture.
 
 ## Where the program stands
 
-*Status re-audited against freentonic main @ `cfda5fa` (PR #37 merged,
-2026-07-05). **Asks 0–5 have ALL shipped**: PR #35 (Ask 0 forward + Ask
-1 endpoint headers/PUT), PR #36 (Asks 2–4, the `elevate:` phase), PR
-#37 (Ask 5 plan verbs). This doc is kept as the program record; the
-remaining gap for full ING retirement is Ask 6 at the bottom.*
+*Status re-audited against freentonic main @ `f0bb35a` (PR #38 merged).
+**Asks 0–6 have ALL shipped**: PR #35 (Ask 0 forward + Ask 1 endpoint
+headers/PUT), PR #36 (Asks 2–4, the `elevate:` phase), PR #37 (Ask 5
+plan verbs), PR #38 / freentonic v0.14.0 (Ask 6, the `lookup:` verb).
+**The program is complete**: `ing/extractor.rb` is deleted and every
+provider in this repo is now zero-Ruby except its normalizer. This doc
+is kept as the program record.*
 
 | Provider | Extract | Blocked on |
 | --- | --- | --- |
 | Revolut | `extract: plan:` (on main) | — |
 | Fintonic | `extract: plan:` (on main) | — |
 | Unicaja | `extract: plan:` (on main) | — |
-| **ING** | slim `extractor.rb` (orchestration only; SCA now in `elevate:`) | **Ask 6** |
+| **ING** | `extract: plan:` (on main; `extractor.rb` deleted) | — |
 
 The insight that unlocked this: **everything imperative left in ING is
 session lifecycle, not extraction.** The extractor used to be four jobs
@@ -257,12 +259,21 @@ for, when the final migration happens:
    from every provider.
 4. ~~**Ask 5** (index_by, skip-with-warn, on_error message)~~ — **done**,
    freentonic PR #37.
-5. **Ask 6** (`lookup:` — dynamic-key map read) — after which
-   `ing/extractor.rb` is deleted and every provider in this repo is
-   zero-Ruby except normalizers. The final migration also moves the
-   movements-to-product attachment behind a raw-shape decision: either
-   `lookup:` keeps today's shape (movements attached per product), or
-   the plan outputs `movements_by_uuid` and the normalizer joins.
+5. ~~**Ask 6** (`lookup:` — dynamic-key map read)~~ — **done**,
+   freentonic PR #38 / v0.14.0. `ing/extractor.rb` is deleted and every
+   provider in this repo is now zero-Ruby except its normalizer.
+
+   The raw-shape decision resolved to **`movements_by_uuid` + normalizer
+   join**, not "movements attached per product". The plan grammar builds
+   new values and cannot graft a `movements` key onto a product hash
+   (the scope resolver has no merge/spread), so keeping today's exact
+   array-of-products-with-movements shape wasn't cleanly expressible.
+   The map form is also the established house style (Unicaja already
+   emits `cuenta_movements`/`tarjeta_movements` maps its normalizer
+   joins), and it keeps each product byte-identical — the ING normalizer
+   change was three lines (accept `{products:, movements_by_uuid:}`,
+   join per product's local uuid) behind a shape sniff that leaves the
+   legacy inline-`movements` shape working for saved-raw replays.
 
 End state: the only Ruby a provider PR can contain is a normalizer, and
 everything a provider is *allowed to do* to a session is enumerable by

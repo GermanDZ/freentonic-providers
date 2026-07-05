@@ -4,13 +4,14 @@ Ready-to-use workflow YAMLs and provider plugins for the
 [freentonic](https://github.com/GermanDZ/freentonic) framework.
 
 Each subdirectory is a self-contained provider: a `workflow.yml` plus the
-sibling Ruby files (`extractor.rb`, `normalizer.rb`) it references.
+sibling `normalizer.rb` it references. Extraction is fully declarative
+across every provider — no provider carries an `extractor.rb` anymore.
 
 ## Providers
 
 | Provider  | Directory      | Status | Extract | Notes                                               |
 | --------- | -------------- | ------ | ------- | --------------------------------------------------- |
-| ING España | [`ing/`](ing)     | v1     | Ruby (orchestration only) | Drives the v2 `/search` API. SCA is declarative: the workflow's `elevate:` phase runs the PSD2 handshake (operator push approval + host-scoped Bearer rebind) when lookback > 90d. The slim `extractor.rb` only orchestrates fetches — no `raw_request`, no session mutation. |
+| ING España | [`ing/`](ing)     | v1     | Plan    | Drives the v2 `/search` API. SCA is declarative: the workflow's `elevate:` phase runs the PSD2 handshake (operator push approval + host-scoped Bearer rebind) when lookback > 90d. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — `index_by:` + `lookup:` join ING's legacy↔modern product lists, one `/search` call per UUID, movements land in a `movements_by_uuid` map the normalizer joins. No `extractor.rb`. |
 | Unicaja    | [`unicaja/`](unicaja) | v1     | Plan    | Drives the Univia REST API. Requires `tokencsrf`. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — a `when:` gate drives the >30-day extended-history fetch, `dedup_by:` merges the two movement endpoints. The credit/debit filter lives in the normalizer. No `extractor.rb`. |
 | Revolut    | [`revolut/`](revolut) | v1     | Plan    | Drives the Revolut retail API. Cookie auth + app push 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — no `extractor.rb`. |
 | Fintonic   | [`fintonic/`](fintonic) | v1   | Plan    | Drives the Fintonic REST API. Bearer auth + SMS 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — offset pagination on the endpoint, `concat:` + `dedup_by:` for the read/unread merge. No `extractor.rb`. |
