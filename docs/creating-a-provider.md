@@ -197,6 +197,12 @@ provider API." It's plain Ruby — not a framework subclass — and is
 instantiated by `Stages::Extract` with `.new`, then called with keyword
 args:
 
+> **Before you write Ruby:** if your extractor is pure orchestration
+> (fetch → loop → assemble, nothing imperative), you can skip this file
+> entirely and declare an `extract: plan:` in the YAML instead. See
+> [writing-extract-plans.md](writing-extract-plans.md) — the example
+> below has a one-to-one plan equivalent. Revolut is authored this way.
+
 ```ruby
 # my_bank/extractor.rb
 module Freentonic

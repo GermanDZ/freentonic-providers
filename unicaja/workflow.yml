@@ -266,9 +266,103 @@ api_client:
       response:
         extract_batch: [movimientos, listaMovimientos]
 
+# Pure orchestration — no extractor.rb. The credit-vs-debit card filter is
+# NOT here: it's a classify-and-drop string decision, which is the
+# normalizer's job (unicaja/normalizer.rb#credit_card?). This plan fetches
+# movements for every tarjeta; the normalizer drops the debit ones (and
+# never reads their movements), so the SimpleFIN output is unchanged.
 extract:
-  ruby: ./extractor.rb
-  class: Freentonic::Providers::Unicaja::Extractor
+  plan:
+    steps:
+      - fetch: fetch_listacuentas
+        as: raw_cuentas
+      - select: { from: raw_cuentas, path: [cuentas, listaCuentas], default: [] }
+        as: cuentas
+
+      - fetch: fetch_listatarjetas
+        as: raw_tarjetas
+      - select: { from: raw_tarjetas, path: [tarjetas, listaTarjetas], default: [] }
+        as: tarjetas
+
+      - fetch: fetch_listaprestamos
+        as: raw_prestamos
+        safe: true
+        default: {}
+      - select: { from: raw_prestamos, path: prestamos, default: [] }
+        as: prestamos_own
+      - select: { from: raw_prestamos, path: prestamosAvalados, default: [] }
+        as: prestamos_avalados
+      - concat: [prestamos_own, prestamos_avalados]
+        as: prestamos
+
+      # recent_from = extended ? (today - 30) : from_date, where
+      # extended == lookback_days > 30. Two lets: the default, then the
+      # gated override — the second only binds when the gate holds.
+      - let: recent_from
+        value: "{from_date}"
+      - let: recent_from
+        days_ago: 30
+        when: { lookback_days: { gt: 30 } }
+
+      # Per-cuenta movements. Standard fetch always runs (recent window);
+      # the extended-history fetch runs only on long lookbacks (>30 days,
+      # the OTP-armed session) and is merged in, deduping the overlap
+      # across the two endpoints' field spellings (numMovimiento vs nummov,
+      # nil key → kept).
+      - for_each:
+          source: cuentas
+        as_item: cuenta
+        as: cuenta_movements
+        collect: map
+        key: "{ppp}"
+        do:
+          - select: { from: cuenta, path: [ppp, codigoProducto] }
+            as: ppp
+          - fetch: fetch_all_account_movements
+            args: { ppp: "{ppp}", fecha_desde: "{recent_from}" }
+            as: recent
+            safe: true
+            default: []
+            when: { ppp: { present: true } }
+          - fetch: fetch_extended_account_movements
+            args: { ppp: "{ppp}", fecha_desde: "{from_date}", fecha_hasta: "{recent_from}" }
+            as: old
+            safe: true
+            default: []
+            when: { lookback_days: { gt: 30 }, ppp: { present: true } }
+          - concat: [old, recent]
+            as: merged
+          - dedup_by: [numMovimiento, nummov]
+            from: merged
+            as: movements
+          - yield: "{movements}"
+            skip_if_nil: ppp
+
+      # Per-tarjeta movements, keyed by ppp. Fetched for every card; the
+      # normalizer keeps only credit cards (see the header note).
+      - for_each:
+          source: tarjetas
+        as_item: tarjeta
+        as: tarjeta_movements
+        collect: map
+        key: "{ppp}"
+        do:
+          - select: { from: tarjeta, path: [ppp, codigoProducto] }
+            as: ppp
+          - fetch: fetch_all_card_movements
+            args: { ppp: "{ppp}", fecha_desde: "{from_date}" }
+            as: movements
+            safe: true
+            default: []
+            when: { ppp: { present: true } }
+          - yield: "{movements}"
+            skip_if_nil: ppp
+    output:
+      cuentas: "{cuentas}"
+      tarjetas: "{tarjetas}"
+      prestamos: "{prestamos}"
+      cuenta_movements: "{cuenta_movements}"
+      tarjeta_movements: "{tarjeta_movements}"
 
 normalize:
   ruby: ./normalizer.rb

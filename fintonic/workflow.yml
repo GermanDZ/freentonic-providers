@@ -178,6 +178,12 @@ api_client:
     Accept:        "application/vnd.fintonic-v7+json"
     psd2_support:  "true"
   date_format: "%Y-%m-%d"
+  # The transaction endpoints wrap their rows in {"count":N,"resultList":[…]}.
+  # batch_keys drives the offset-pagination unwrap on fetch_transactions;
+  # the single-shot fetch_unread_transactions unwraps via its own
+  # response.extract_batch below.
+  batch_keys:
+    - resultList
   endpoints:
     - name: fetch_date_range
       method: GET
@@ -185,19 +191,78 @@ api_client:
     - name: fetch_categories
       method: GET
       path: "/category/tree"
+    # Read transactions — offset-paginated by the framework. The loop
+    # injects {offset} into pageOffset and stops on a short/empty page
+    # (the same rows the old hand-written total-tracking loop produced;
+    # it may issue one extra empty page when the total is an exact
+    # multiple of the limit). beginDate/endDate are ISO-formatted from
+    # whatever the plan binds (a Date or an ISO string) via |iso.
     - name: fetch_transactions
       method: GET
       path: "/transaction/list"
+      pagination: offset
+      limit: 100
       params:
-        pageLimit:  "{page_limit}"
-        pageOffset: "{page_offset}"
-        beginDate:  "{begin_date}"
-        endDate:    "{end_date}"
-        read:       "{read_flag}"
+        pageLimit:  100
+        pageOffset: "{offset}"
+        beginDate:  "{begin_date|iso}"
+        endDate:    "{end_date|iso}"
+        read:       "true"
+    # Unread transactions — a single request (pageLimit -1 returns them
+    # all), merged + deduped against the read set by the plan.
+    - name: fetch_unread_transactions
+      method: GET
+      path: "/transaction/list"
+      params:
+        pageLimit:  -1
+        pageOffset: 0
+        beginDate:  "{begin_date|iso}"
+        endDate:    "{end_date|iso}"
+        read:       "false"
+      response:
+        extract_batch: [resultList]
 
+# Pure orchestration — no extractor.rb. Coalesce the date range (the
+# ArgumentError-free `from_date || olderTransactionUserDate || "2015-01-01"`),
+# fetch read (paginated) + unread, concat, dedup by Fintonic id.
 extract:
-  ruby: ./extractor.rb
-  class: Freentonic::Providers::Fintonic::Extractor
+  plan:
+    steps:
+      - fetch: fetch_date_range
+        as: date_range
+        safe: true
+        default: {}
+      - fetch: fetch_categories
+        as: raw_categories
+        safe: true
+        default: {}
+      - select: { from: raw_categories, path: categoryTree, default: {} }
+        as: categoryTree
+
+      - let: begin_date
+        coalesce: ["{from_date}", "{date_range.olderTransactionUserDate}", "2015-01-01"]
+      - let: end_date
+        coalesce: ["{date_range.newerTransactionUserDate}", "{today}"]
+
+      - fetch: fetch_transactions
+        args: { begin_date: "{begin_date}", end_date: "{end_date}" }
+        as: read_txs
+        safe: true
+        default: []
+      - fetch: fetch_unread_transactions
+        args: { begin_date: "{begin_date}", end_date: "{end_date}" }
+        as: unread_txs
+        safe: true
+        default: []
+
+      - concat: [read_txs, unread_txs]
+        as: all_txs
+      - dedup_by: id
+        from: all_txs
+        as: transactions
+    output:
+      categoryTree: "{categoryTree}"
+      transactions: "{transactions}"
 
 normalize:
   ruby: ./normalizer.rb
