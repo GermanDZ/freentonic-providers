@@ -2,12 +2,54 @@
 
 require "minitest/autorun"
 require "bigdecimal"
+require "stringio"
 require "freentonic"
-require_relative "../normalizer"
 
+# Behavior tests for the ING normalizer. As of the Ask 9 migration there is
+# no normalizer.rb — normalization is the declarative `normalize: plan:` in
+# workflow.yml. These tests exercise that plan (built exactly as a live sync
+# builds it), keeping the incident-history assertions — per-plastic CC
+# balances, pre-clearing collapse, store disambiguation, portable-id
+# collisions with Fintonic, v2/search translation — guarding the plan.
+# Byte-for-byte parity with the old Ruby normalizer is separately pinned by
+# ing_normalize_parity_test.rb against committed goldens.
 class IngNormalizerTest < Minitest::Test
+  WORKFLOW = File.expand_path("../workflow.yml", __dir__)
+
+  # The tests feed the pre-migration `[product-with-inline-movements]`
+  # shape; this wrapper reshapes it into the live `{ products,
+  # movements_by_uuid }` the plan consumes, so the existing fixtures drive
+  # the plan unchanged.
+  class PlanNormalizer
+    def initialize(workflow)
+      @plan = Freentonic::Normalizers::Builder.for_workflow(
+        workflow, stdout: StringIO.new, stderr: StringIO.new
+      )
+    end
+
+    def call(raw, context: {})
+      products, movements_by_uuid = reshape(raw)
+      @plan.call({ "products" => products, "movements_by_uuid" => movements_by_uuid })
+    end
+
+    private
+
+    def reshape(raw)
+      return [Array(raw["products"]), raw["movements_by_uuid"] || {}] if raw.is_a?(Hash) && raw.key?("products")
+
+      movements_by_uuid = {}
+      products = Array(raw).map do |product|
+        product = product.dup
+        movements = product.delete("movements")
+        movements_by_uuid[product["uuid"]] = movements if movements
+        product
+      end
+      [products, movements_by_uuid]
+    end
+  end
+
   def normalizer
-    Freentonic::Providers::Ing::Normalizer.new
+    @normalizer ||= PlanNormalizer.new(WORKFLOW)
   end
 
   def asset_product(overrides = {})
@@ -152,34 +194,14 @@ class IngNormalizerTest < Minitest::Test
     assert_equal "cc-1",        liab.source_id
   end
 
-  def test_credit_card_balance_falls_back_to_line_outstanding_when_no_per_card_data
-    # No monthPurchasesAmount on the (sole) plastic: it is the line carrier,
-    # so it absorbs the full line outstanding (creditLimit 6500 -
-    # availableBalance 4317.19 = 2182.81), negated (money owed).
-    payload = normalizer.call([credit_card_product])
-    acct = payload.accounts.first
-    assert_equal BigDecimal("-2182.81"), acct.balance.current
-    assert_equal "ing_live:line_outstanding", acct.metadata["balance_source"]
-  end
-
-  def test_credit_card_with_no_outstanding_is_zero
-    payload = normalizer.call([credit_card_product("creditLimit" => 1485.0,
-                                                   "availableBalance" => 1485.0)])
-    acct = payload.accounts.first
-    assert_equal BigDecimal("0"), acct.balance.current
-    assert_equal "ing_live:line_outstanding", acct.metadata["balance_source"]
-  end
-
-  def test_credit_card_without_limit_or_available_has_nil_balance
-    # Defensive: if ING ever changes the shape and stops emitting either
-    # field, surface that as missing (the canonical reshape will then
-    # report it in errors[]) rather than silently emitting 0.
-    payload = normalizer.call([credit_card_product("creditLimit" => nil,
-                                                   "availableBalance" => nil)])
-    acct = payload.accounts.first
-    assert_nil acct.balance.current
-    assert_nil acct.metadata["balance_source"]
-  end
+  # NOTE: the old line-outstanding *fallback* (carrier absorbs
+  # creditLimit − availableBalance when a line exposes no per-plastic
+  # monthPurchasesAmount) was dropped in the Ask 9 plan migration. A
+  # real-data audit (two production ING dumps, every type-3 plastic) showed
+  # monthPurchasesAmount is always present, so the fallback branch never
+  # fired — its three tests (falls_back_to_line_outstanding, no_outstanding,
+  # without_limit_or_available) tested dead code and were removed. The live
+  # per-plastic path is covered below and in the parity goldens.
 
   def test_each_plastic_emits_its_own_account_with_distinct_portable_ref
     # Cross-source matching with Fintonic happens per-plastic (Fintonic

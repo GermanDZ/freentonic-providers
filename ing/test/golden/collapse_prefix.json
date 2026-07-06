@@ -1,0 +1,87 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 1,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "-26.38"
+    },
+    "balances_by_currency": {
+      "EUR": "500.0"
+    },
+    "date_range": {
+      "earliest": "2026-05-21",
+      "latest": "2026-05-21"
+    }
+  },
+  "meta": {
+    "scraper_version": "ing/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_fc32aa60345fd3a6",
+      "source_id": "prod-asset-2",
+      "portable_id": "bank:1465:7251",
+      "institution": "ing",
+      "name": "Cuenta NARANJA",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": "ES5914650100981714397251",
+      "balance": {
+        "current": "500.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "ing_product_type": 20,
+        "ing_product_number": "ES5914650100981714397251",
+        "balance_source": "ing_live:product_balance"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_fa03950d9efd3159",
+      "source_id": "v2-seq:ledger-asset-2:7002",
+      "account_id": "acc_fc32aa60345fd3a6",
+      "date": "2026-05-21",
+      "value_date": null,
+      "amount": "-26.38",
+      "currency": "EUR",
+      "description": "WWW.AMAZON*NO3CS7J44           LUXEMBOURG",
+      "raw_description": "WWW.AMAZON*NO3CS7J44           LUXEMBOURG",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "ing": {
+          "uuid": "v2-seq:ledger-asset-2:7002",
+          "operationId": null,
+          "status": null,
+          "tranCode": "TCTPV",
+          "typeCod": null,
+          "typeDesc": null,
+          "store": null,
+          "description": "WWW.AMAZON*NO3CS7J44           LUXEMBOURG",
+          "effectiveDate": "21/05/2026",
+          "chargeDate": null,
+          "clearingDate": null,
+          "clearanceStartDate": null,
+          "clearanceEndDate": null,
+          "cardNumber": null,
+          "opCountry": null,
+          "opHour": null,
+          "ecommerce": null,
+          "originAmount": null,
+          "amount": -26.38
+        }
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}
