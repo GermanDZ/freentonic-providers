@@ -28,8 +28,15 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: "3.4"
-          bundler-cache: true
           working-directory: freentonic-providers
+
+      # Gemfile.lock bakes in the absolute path to the sibling freentonic
+      # checkout, which differs on every runner. bundler-cache: true runs in
+      # frozen/deployment mode and rejects that mismatch, so install plainly
+      # instead (only ~7 gems — no meaningful caching benefit lost).
+      - name: Install dependencies
+        working-directory: freentonic-providers
+        run: bundle install --jobs 4
 
       - name: Run tests
         working-directory: freentonic-providers
