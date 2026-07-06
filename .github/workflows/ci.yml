@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout freentonic-providers
+        uses: actions/checkout@v4
+        with:
+          path: freentonic-providers
+
+      # freentonic-providers/Gemfile points the freentonic gem at a sibling
+      # ../freentonic checkout (it's not published to RubyGems). Pin the ref
+      # here to match this repo's Gemfile.lock version; bump both together.
+      - name: Checkout freentonic
+        uses: actions/checkout@v4
+        with:
+          repository: GermanDZ/freentonic
+          ref: v0.18.0
+          path: freentonic
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.4"
+          working-directory: freentonic-providers
+
+      # Gemfile.lock bakes in the absolute path to the sibling freentonic
+      # checkout, which differs on every runner. bundler-cache: true runs in
+      # frozen/deployment mode and rejects that mismatch, so install plainly
+      # instead (only ~7 gems — no meaningful caching benefit lost).
+      - name: Install dependencies
+        working-directory: freentonic-providers
+        run: bundle install --jobs 4
+
+      - name: Run tests
+        working-directory: freentonic-providers
+        run: bundle exec rake test
