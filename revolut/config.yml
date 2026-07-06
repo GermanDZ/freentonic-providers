@@ -7,6 +7,19 @@
 institution: revolut
 scraper_version: revolut/0.2
 
+# Timezone for reducing an instant to a canonical calendar Date. Revolut's
+# transaction dates are absolute instants (epoch-ms startedDate, or Zulu
+# ISO), so the calendar day depends on the zone we bucket them into. Both
+# default to UTC framework-wide; set here explicitly because Revolut is
+# UTC-native and we book by UTC day.
+#
+# To book by a user's local day instead, set output_timezone to their zone
+# — a fixed offset like "+01:00" (pure stdlib) or a DST-correct IANA name
+# like "Europe/Madrid" (requires the tzinfo gem). input_timezone only
+# matters for offset-naive datetime strings, which Revolut never sends.
+input_timezone: UTC
+output_timezone: UTC
+
 # Revolut emits the same logical field under different keys depending
 # on the entity (vault vs pocket) or the transaction lifecycle stage
 # (started vs completed). Declare alias chains so the normalizer

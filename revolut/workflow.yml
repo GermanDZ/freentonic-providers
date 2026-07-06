@@ -321,7 +321,10 @@ normalize:
                 args: { key: tx_date, source: "{tx}", aliases: "{config.field_aliases}" }
                 as: tx_date_raw
               - apply: parse_date
-                args: { value: "{tx_date_raw}" }
+                args:
+                  value: "{tx_date_raw}"
+                  input_timezone: "{config.input_timezone}"
+                  output_timezone: "{config.output_timezone}"
                 as: date
               - skip_when: { date: { absent: true } }
               - let: tx_currency
