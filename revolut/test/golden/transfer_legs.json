@@ -60,12 +60,15 @@
         "revolut": {
           "id": "7c90ac30-5c9f-4dd8-aa4b-9f48390a65b8",
           "legId": "7c90ac30-5c9f-4dd8-0000-9f48390a65b8",
-          "startedDate": 1536105600000,
           "amount": -5086,
           "currency": "EUR",
           "description": "To EUR",
           "type": "TRANSFER",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1536105600000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -86,12 +89,15 @@
         "revolut": {
           "id": "7c90ac30-5c9f-4dd8-aa4b-9f48390a65b8",
           "legId": "7c90ac30-5c9f-4dd8-0001-9f48390a65b8",
-          "startedDate": 1536105600000,
           "amount": 5086,
           "currency": "EUR",
           "description": "From EUR Experimento 1",
           "type": "TRANSFER",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1536105600000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     }

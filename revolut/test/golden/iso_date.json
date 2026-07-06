@@ -59,11 +59,16 @@
       "metadata": {
         "revolut": {
           "id": "tx-iso",
-          "startedDate": "2024-03-15T10:00:00.000Z",
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "Test",
-          "state": "COMPLETED"
+          "type": null,
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": "2024-03-15T10:00:00.000Z",
+          "completedDate": null,
+          "createdDate": null
         }
       }
     }

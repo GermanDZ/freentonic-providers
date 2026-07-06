@@ -104,11 +104,14 @@
           "id": "tr-1",
           "legId": "tr-1-debit",
           "amount": -1234,
-          "startedDate": 1710504000000,
           "currency": "EUR",
           "description": "Coffee",
           "type": "CARD_PAYMENT",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -130,11 +133,14 @@
           "id": "tr-2",
           "legId": "tr-2-credit",
           "amount": 50000,
-          "startedDate": 1710417600000,
           "currency": "EUR",
           "description": "Bank Transfer",
           "type": "TRANSFER",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710417600000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -156,11 +162,14 @@
           "id": "tr-3",
           "legId": "tr-3-debit",
           "amount": -100,
-          "startedDate": 1710504000000,
           "currency": "EUR",
           "description": "Vault top-up",
           "type": "TRANSFER",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     }

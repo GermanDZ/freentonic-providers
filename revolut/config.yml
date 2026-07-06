@@ -38,3 +38,20 @@ status_map:
   DECLINED:  declined
   FAILED:    failed
   REVERTED:  reverted
+
+# Allowlist of raw transaction fields preserved into transaction.metadata
+# (mirrors ING's raw_fields_movement). Replaces embedding the full raw `tx`
+# hash, which carried legs/counterparty/everything into every canonical
+# transaction.
+raw_fields_transaction:
+  id:            id
+  legId:         legId
+  amount:        amount
+  currency:      currency
+  description:   description
+  type:          type
+  state:         state
+  merchant:      merchant.name
+  startedDate:   startedDate
+  completedDate: completedDate
+  createdDate:   createdDate

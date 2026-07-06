@@ -59,11 +59,16 @@
       "metadata": {
         "revolut": {
           "id": "ok",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "x",
-          "state": "COMPLETED"
+          "type": null,
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -83,11 +88,16 @@
       "metadata": {
         "revolut": {
           "id": "pending",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "x",
-          "state": "PENDING"
+          "type": null,
+          "state": "PENDING",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -107,11 +117,16 @@
       "metadata": {
         "revolut": {
           "id": "declined",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "x",
-          "state": "DECLINED"
+          "type": null,
+          "state": "DECLINED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -131,11 +146,16 @@
       "metadata": {
         "revolut": {
           "id": "failed",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "x",
-          "state": "FAILED"
+          "type": null,
+          "state": "FAILED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -155,11 +175,16 @@
       "metadata": {
         "revolut": {
           "id": "reverted",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "x",
-          "state": "REVERTED"
+          "type": null,
+          "state": "REVERTED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -179,11 +204,16 @@
       "metadata": {
         "revolut": {
           "id": "unknown",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "x",
-          "state": "QUANTUM_SUPERPOSITION"
+          "type": null,
+          "state": "QUANTUM_SUPERPOSITION",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     }
