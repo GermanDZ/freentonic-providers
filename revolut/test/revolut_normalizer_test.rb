@@ -133,6 +133,31 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal "Coffee Shop",            txn.raw_description
   end
 
+  # A near-midnight instant is booked by the MADRID calendar day, not UTC.
+  # 1_710_457_200_000 ms = 2024-03-14 23:00:00 UTC = 2024-03-15 00:00 in
+  # Madrid (CET, +01:00 in March). config.yml sets output_timezone:
+  # Europe/Madrid, so the transaction lands on the 15th — the day the user
+  # saw it in the app — where a UTC bucket would (wrongly, for us) say the
+  # 14th. Locks the Spain-based booking-zone contract.
+  def test_transaction_dates_book_by_madrid_calendar_day
+    raw = {
+      "wallet"  => {},
+      "pockets" => [{ "id" => "p1", "currency" => "EUR", "balance" => 0 }],
+      "bank_details" => [],
+      "vaults" => [],
+      "pocket_transactions" => {
+        "p1" => [
+          { "id" => "near-midnight", "startedDate" => 1_710_457_200_000,
+            "amount" => -500, "currency" => "EUR", "description" => "Late night",
+            "state" => "COMPLETED" }
+        ]
+      }
+    }
+    txn = normalizer.call(raw).transactions.first
+    assert_equal Date.new(2024, 3, 15), txn.date,
+                 "near-midnight UTC instant must book on the Madrid day"
+  end
+
   # --- vaults ------------------------------------------------------------
 
   def vault_raw
