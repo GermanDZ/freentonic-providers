@@ -1,0 +1,39 @@
+{
+  "products": [
+    {
+      "uuid": "prod-asset-1",
+      "type": 20,
+      "alias": "Cuenta NARANJA",
+      "productNumber": "ES5914650100981714391272",
+      "iban": "ES59 1465 0100 9817 1439 1272",
+      "currency": "EUR",
+      "balance": 1234.56
+    }
+  ],
+  "movements_by_uuid": {
+    "prod-asset-1": [
+      {
+        "transactionId": { "productId": "ledger-asset-1", "transactionSequence": 4509 },
+        "transactionDate": "2026-05-14",
+        "description": "Recibo AYUNTAMIENTO DE ALCOBENDAS (DEPORTES)",
+        "concept": " REFERENCIA: AB4905839   RECIBO: 10196167   CUOTA ABONADO 42,50",
+        "subcategoryId": "64",
+        "amount": "-42.50",
+        "transactionCode": "RECIBSEPA",
+        "balance": 3862.36,
+        "transactionLocalUUID": "___V1ID___nonceA___V1ID___",
+        "mode": "P"
+      },
+      {
+        "transactionId": { "productId": "ledger-asset-1", "transactionSequence": 4511 },
+        "transactionDate": "2026-05-15",
+        "description": "COFFEE SHOP MADRID",
+        "amount": "-3.20",
+        "transactionCode": "TCTPV",
+        "balance": 3859.16,
+        "transactionLocalUUID": "___V1ID___nonceB___V1ID___",
+        "mode": "P"
+      }
+    ]
+  }
+}

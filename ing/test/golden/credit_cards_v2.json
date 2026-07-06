@@ -1,0 +1,138 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 2,
+      "transactions": 1,
+      "liabilities": 2,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "-26.59"
+    },
+    "balances_by_currency": {
+      "EUR": "-1428.26"
+    },
+    "date_range": {
+      "earliest": "2026-05-19",
+      "latest": "2026-05-19"
+    }
+  },
+  "meta": {
+    "scraper_version": "ing/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_5285b74483ade680",
+      "source_id": "prod-cc-1",
+      "portable_id": "card:1465:1087",
+      "institution": "ing",
+      "name": "Tarjeta Crédito ·1087",
+      "type": "credit_card",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "-360.44",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "ing_product_type": 3,
+        "ing_product_number": "5160974472951087",
+        "balance_source": "ing_live:card_purchases",
+        "ing_month_purchases": 360.44
+      }
+    },
+    {
+      "id": "acc_a80f8384a0ce4db2",
+      "source_id": "prod-cc-2",
+      "portable_id": "card:1465:1095",
+      "institution": "ing",
+      "name": "Tarjeta Crédito ·1095",
+      "type": "credit_card",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "-1067.82",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "ing_product_type": 3,
+        "ing_product_number": "5160974472951095",
+        "balance_source": "ing_live:card_purchases",
+        "ing_month_purchases": 1067.82
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_b81a203f399d1387",
+      "source_id": "v2-seq:ledger-cc-1:618803278",
+      "account_id": "acc_5285b74483ade680",
+      "date": "2026-05-19",
+      "value_date": null,
+      "amount": "-26.59",
+      "currency": "EUR",
+      "description": "WWW.AMAZON* NA43U4RA4          LUXEMBOURG",
+      "raw_description": "WWW.AMAZON* NA43U4RA4          LUXEMBOURG",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "ing": {
+          "uuid": "v2-seq:ledger-cc-1:618803278",
+          "operationId": null,
+          "status": null,
+          "tranCode": "TCTPV",
+          "typeCod": null,
+          "typeDesc": null,
+          "store": null,
+          "description": "WWW.AMAZON* NA43U4RA4          LUXEMBOURG     ",
+          "effectiveDate": "19/05/2026",
+          "chargeDate": null,
+          "clearingDate": null,
+          "clearanceStartDate": null,
+          "clearanceEndDate": null,
+          "cardNumber": null,
+          "opCountry": null,
+          "opHour": null,
+          "ecommerce": null,
+          "originAmount": null,
+          "amount": -26.59
+        }
+      }
+    }
+  ],
+  "liabilities": [
+    {
+      "id": "liab_73136fa182e32e26",
+      "source_id": "prod-cc-1",
+      "type": "credit_card",
+      "account_id": "acc_5285b74483ade680",
+      "balance": null,
+      "limit": null,
+      "currency": "EUR",
+      "due_date": null,
+      "metadata": {
+        "ing_product_type": 3,
+        "ing_product_number": "5160974472951087"
+      }
+    },
+    {
+      "id": "liab_89dc0b7786c0756b",
+      "source_id": "prod-cc-2",
+      "type": "credit_card",
+      "account_id": "acc_a80f8384a0ce4db2",
+      "balance": null,
+      "limit": null,
+      "currency": "EUR",
+      "due_date": null,
+      "metadata": {
+        "ing_product_type": 3,
+        "ing_product_number": "5160974472951095"
+      }
+    }
+  ],
+  "investments": []
+}

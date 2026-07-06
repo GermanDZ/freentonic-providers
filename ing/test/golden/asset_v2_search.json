@@ -1,0 +1,124 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 2,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "-45.7"
+    },
+    "balances_by_currency": {
+      "EUR": "1234.56"
+    },
+    "date_range": {
+      "earliest": "2026-05-14",
+      "latest": "2026-05-15"
+    }
+  },
+  "meta": {
+    "scraper_version": "ing/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_5cdb8706c79e789d",
+      "source_id": "prod-asset-1",
+      "portable_id": "bank:1465:1272",
+      "institution": "ing",
+      "name": "Cuenta NARANJA",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": "ES5914650100981714391272",
+      "balance": {
+        "current": "1234.56",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "ing_product_type": 20,
+        "ing_product_number": "ES5914650100981714391272",
+        "balance_source": "ing_live:product_balance"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_9666f6b0a3ad9553",
+      "source_id": "v2-seq:ledger-asset-1:4509",
+      "account_id": "acc_5cdb8706c79e789d",
+      "date": "2026-05-14",
+      "value_date": null,
+      "amount": "-42.5",
+      "currency": "EUR",
+      "description": "Recibo AYUNTAMIENTO DE ALCOBENDAS (DEPORTES) — REFERENCIA: AB4905839 RECIBO: 10196167 CUOTA ABONADO 42,50",
+      "raw_description": "Recibo AYUNTAMIENTO DE ALCOBENDAS (DEPORTES) — REFERENCIA: AB4905839 RECIBO: 10196167 CUOTA ABONADO 42,50",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "ing": {
+          "uuid": "v2-seq:ledger-asset-1:4509",
+          "operationId": null,
+          "status": null,
+          "tranCode": "RECIBSEPA",
+          "typeCod": null,
+          "typeDesc": null,
+          "store": " REFERENCIA: AB4905839   RECIBO: 10196167   CUOTA ABONADO 42,50",
+          "description": "Recibo AYUNTAMIENTO DE ALCOBENDAS (DEPORTES)",
+          "effectiveDate": "14/05/2026",
+          "chargeDate": null,
+          "clearingDate": null,
+          "clearanceStartDate": null,
+          "clearanceEndDate": null,
+          "cardNumber": null,
+          "opCountry": null,
+          "opHour": null,
+          "ecommerce": null,
+          "originAmount": null,
+          "amount": -42.5
+        }
+      }
+    },
+    {
+      "id": "txn_2651ee6bfbdbeb3b",
+      "source_id": "v2-seq:ledger-asset-1:4511",
+      "account_id": "acc_5cdb8706c79e789d",
+      "date": "2026-05-15",
+      "value_date": null,
+      "amount": "-3.2",
+      "currency": "EUR",
+      "description": "COFFEE SHOP MADRID",
+      "raw_description": "COFFEE SHOP MADRID",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "ing": {
+          "uuid": "v2-seq:ledger-asset-1:4511",
+          "operationId": null,
+          "status": null,
+          "tranCode": "TCTPV",
+          "typeCod": null,
+          "typeDesc": null,
+          "store": null,
+          "description": "COFFEE SHOP MADRID",
+          "effectiveDate": "15/05/2026",
+          "chargeDate": null,
+          "clearingDate": null,
+          "clearanceStartDate": null,
+          "clearanceEndDate": null,
+          "cardNumber": null,
+          "opCountry": null,
+          "opHour": null,
+          "ecommerce": null,
+          "originAmount": null,
+          "amount": -3.2
+        }
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}

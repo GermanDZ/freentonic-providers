@@ -1,0 +1,66 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 0,
+      "liabilities": 1,
+      "investments": 0
+    },
+    "amounts_by_currency": {},
+    "balances_by_currency": {
+      "EUR": "-1234.56"
+    },
+    "date_range": null
+  },
+  "meta": {
+    "scraper_version": "ing/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_600d70376b359c81",
+      "source_id": "loan-v1id",
+      "portable_id": "bank:1465:0001",
+      "institution": "ing",
+      "name": "Préstamo NARANJA",
+      "type": "loan",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "-1234.56",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "ing_product_type": 77,
+        "ing_product_number": "10000000000000000001",
+        "balance_source": "ing_live:product_balance"
+      }
+    }
+  ],
+  "transactions": [],
+  "liabilities": [
+    {
+      "id": "liab_950c94aec2f0db25",
+      "source_id": "loan-v1id",
+      "type": "loan",
+      "account_id": "acc_600d70376b359c81",
+      "balance": null,
+      "limit": null,
+      "currency": "EUR",
+      "due_date": "2030-02-01",
+      "metadata": {
+        "ing_product_type": 77,
+        "ing_product_number": "10000000000000000001",
+        "initial_amount": 2000.0,
+        "pending_amount": 1234.56,
+        "pending_payments": 12,
+        "next_pay_off_amount": 99.99,
+        "tin": 1.5,
+        "tae": 1.75,
+        "end_date": "01/02/2035"
+      }
+    }
+  ],
+  "investments": []
+}

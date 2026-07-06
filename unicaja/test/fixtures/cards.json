@@ -1,0 +1,40 @@
+{
+  "cuentas": [],
+  "prestamos": [],
+  "tarjetas": [
+    {
+      "ppp": "001",
+      "numtarjeta": "5540 29** **** 9999",
+      "alias": "",
+      "codtipotarjeta": "2",
+      "tipotarjeta": "MASTERCARD CLASSIC",
+      "divisa": "EUR",
+      "descripcion": "",
+      "limite": { "cantidad": 3000.00, "moneda": "EUR" },
+      "disponible": { "cantidad": 2200.00, "moneda": "EUR" }
+    },
+    {
+      "ppp": "002",
+      "numtarjeta": "5540 29** **** 8888",
+      "alias": "",
+      "codtipotarjeta": "1",
+      "tipotarjeta": "MC DÉBITO DIFERIDO",
+      "divisa": "EUR",
+      "descripcion": "",
+      "limite": { "cantidad": 0, "moneda": "EUR" },
+      "disponible": { "cantidad": 0, "moneda": "EUR" }
+    }
+  ],
+  "cuenta_movements": {},
+  "tarjeta_movements": {
+    "001": [
+      {
+        "fechaOperacion": "2026-06-30",
+        "concepto": "COMPRA AMAZON",
+        "numMovimiento": "C001",
+        "importeMovimiento": { "cantidad": -45.20, "moneda": "EUR" },
+        "categoria": "ID20"
+      }
+    ]
+  }
+}

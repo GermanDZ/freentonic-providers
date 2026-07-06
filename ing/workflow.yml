@@ -418,5 +418,351 @@ extract:
       movements_by_uuid: "{movements_by_uuid}"
 
 normalize:
-  ruby: ./normalizer.rb
-  class: Freentonic::Providers::Ing::Normalizer
+  plan:
+    steps:
+      - select: { from: raw, path: products, default: [] }
+        as: products
+      - select: { from: raw, path: movements_by_uuid, default: {} }
+        as: movements_by_uuid
+      # lookup.from: must name a bound value, so lift the kind table out of
+      # config into a local binding.
+      - select: { from: config, path: kind_by_product_type }
+        as: kind_by_type
+
+      # ================= ACCOUNTS =================
+      # One pass per canonical kind (from config.kind_by_product_type): the
+      # portable-key derivation (card PAN / IBAN / BBAN) and balance source
+      # differ by kind, so splitting keeps each pass branch-free. A nil kind
+      # (debit card type 1, or an unlisted type) is dropped in every pass.
+      # Account order is therefore kind-grouped (checking, then cards, then
+      # loans) rather than raw-product order — deterministic, and downstream
+      # is id-keyed.
+
+      # ---- checking (asset + investment): IBAN portable, top-level balance
+      - for_each: { source: products }
+        as_item: product
+        as: checking_accounts
+        do:
+          - lookup: { from: kind_by_type, key: "{product.type}" }
+            as: kind
+          - skip_when: { kind: { absent: true } }
+          - skip_when: { kind: { eq: liability } }
+          - skip_when: { kind: { eq: loan } }
+          - apply: remove_whitespace
+            args: { value: "{product.iban}" }
+            as: iban
+          - apply: spanish_iban_portable_keys
+            args: { iban: "{iban}", bank_code: "{config.bank_code}" }
+            as: portable
+          - apply: cents
+            args: { amount: "{product.balance}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - apply: first_present
+            args: { candidates: ["{product.alias}", "{product.name}", "ING"] }
+            as: name
+          - let: currency
+            coalesce: ["{product.currency}", "EUR"]
+          - apply: compact
+            args:
+              hash:
+                ing_product_type: "{product.type}"
+                ing_product_number: "{product.productNumber}"
+                balance_source: "ing_live:product_balance"
+                partial_data_suspected: "{product._partial_data_suspected}"
+            as: metadata
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{product.uuid}"
+              currency: "{currency}"
+              name: "{name}"
+              type: checking
+              iban: "{iban}"
+              portable_ref: "{portable.0}"
+              portable_id: "{portable.1}"
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata: "{metadata}"
+            as: account
+          - yield: "{account}"
+
+      # ---- credit cards: PAN portable, per-plastic monthPurchasesAmount as
+      # the negative balance (the live path — each plastic is independent;
+      # the old line-reconciliation fallback is dead, verified against real
+      # data). Emits a companion liability.
+      - for_each: { source: products }
+        as_item: product
+        as: liability_results
+        do:
+          - lookup: { from: kind_by_type, key: "{product.type}" }
+            as: kind
+          - skip_when: { kind: { neq: liability } }
+          - apply: card_pan_portable_keys
+            args: { pan: "{product.productNumber}", bank_code: "{config.bank_code}" }
+            as: portable
+          - apply: cents
+            args: { amount: "{product.monthPurchasesAmount}" }
+            as: mp_cents
+          - apply: negate
+            args: { value: "{mp_cents}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - apply: first_present
+            args: { candidates: ["{product.alias}", "{product.name}", "ING"] }
+            as: base_name
+          # Disambiguate identically-aliased plastics by PAN last-4 so
+          # SimpleFIN clients don't merge them into one account.
+          - apply: pan_last4
+            args: { value: "{product.productNumber}" }
+            as: last4
+          - apply: append_suffix
+            args: { base: "{base_name}", suffix: "{last4}", separator: " ·" }
+            as: name
+          - let: currency
+            coalesce: ["{product.currency}", "EUR"]
+          - apply: compact
+            args:
+              hash:
+                ing_product_type: "{product.type}"
+                ing_product_number: "{product.productNumber}"
+                balance_source: "ing_live:card_purchases"
+                ing_month_purchases: "{product.monthPurchasesAmount}"
+                partial_data_suspected: "{product._partial_data_suspected}"
+            as: metadata
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{product.uuid}"
+              currency: "{currency}"
+              name: "{name}"
+              type: credit_card
+              portable_ref: "{portable.0}"
+              portable_id: "{portable.1}"
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata: "{metadata}"
+            as: account
+          - apply: build_liability
+            args:
+              account_id: "{account.id}"
+              type: credit_card
+              currency: "{account.currency}"
+              source_id: "{product.uuid}"
+              metadata:
+                ing_product_type: "{product.type}"
+                ing_product_number: "{product.productNumber}"
+            as: liability
+          - yield: { account: "{account}", liability: "{liability}" }
+
+      # ---- loans: BBAN portable (productNumber last-4), top-level balance
+      # (negative = owed). Balance-only — /search returns no loan movements.
+      # Emits a loan liability carrying the loan economics + next-payment
+      # due date.
+      - for_each: { source: products }
+        as_item: product
+        as: loan_results
+        do:
+          - lookup: { from: kind_by_type, key: "{product.type}" }
+            as: kind
+          - skip_when: { kind: { neq: loan } }
+          - apply: pan_last4
+            args: { value: "{product.productNumber}" }
+            as: last4
+          - apply: join_present
+            args: { parts: ["{config.bank_code}", "{last4}"], separator: ":" }
+            as: portable_ref
+          - apply: join_present
+            args: { parts: ["bank", "{config.bank_code}", "{last4}"], separator: ":" }
+            as: portable_id
+          - apply: cents
+            args: { amount: "{product.balance}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - apply: first_present
+            args: { candidates: ["{product.alias}", "{product.name}", "ING"] }
+            as: name
+          - let: currency
+            coalesce: ["{product.currency}", "EUR"]
+          - apply: compact
+            args:
+              hash:
+                ing_product_type: "{product.type}"
+                ing_product_number: "{product.productNumber}"
+                balance_source: "ing_live:product_balance"
+                partial_data_suspected: "{product._partial_data_suspected}"
+            as: metadata
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{product.uuid}"
+              currency: "{currency}"
+              name: "{name}"
+              type: loan
+              portable_ref: "{portable_ref}"
+              portable_id: "{portable_id}"
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata: "{metadata}"
+            as: account
+          - apply: parse_date
+            args: { value: "{product.nextPayOffDate}", formats: "{config.ing_date_formats}" }
+            as: due_date
+          - apply: compact
+            args:
+              hash:
+                ing_product_type: "{product.type}"
+                ing_product_number: "{product.productNumber}"
+                initial_amount: "{product.initialAmount}"
+                pending_amount: "{product.pendingAmount}"
+                pending_payments: "{product.pendingPayments}"
+                next_pay_off_amount: "{product.nextPayOffAmount}"
+                tin: "{product.tin}"
+                tae: "{product.tae}"
+                end_date: "{product.endDate}"
+            as: liability_metadata
+          - apply: build_liability
+            args:
+              account_id: "{account.id}"
+              type: loan
+              currency: "{account.currency}"
+              source_id: "{product.uuid}"
+              due_date: "{due_date}"
+              metadata: "{liability_metadata}"
+            as: liability
+          - yield: { account: "{account}", liability: "{liability}" }
+
+      # ---- combine ----
+      - apply: pluck
+        args: { list: "{liability_results}", key: account }
+        as: card_accounts
+      - apply: pluck
+        args: { list: "{liability_results}", key: liability }
+        as: card_liabilities
+      - apply: pluck
+        args: { list: "{loan_results}", key: account }
+        as: loan_accounts
+      - apply: pluck
+        args: { list: "{loan_results}", key: liability }
+        as: loan_liabilities
+      - concat: [checking_accounts, card_accounts, loan_accounts]
+        as: accounts
+      - concat: [card_liabilities, loan_liabilities]
+        as: liabilities
+
+      # ================= TRANSACTIONS =================
+      # One uniform pass over every built account (source_id = the product's
+      # local uuid); movements live in the side map keyed by that uuid. A raw
+      # /v2/search row is translated to canonical fields inline — coalesce
+      # picks the v2 field, falling back to a legacy-shaped field so replayed
+      # pre-migration payloads still normalize. Rows missing a stable id
+      # (transactionId → v2-seq) drop; zero/garbage amounts drop.
+      - for_each: { source: accounts }
+        as_item: account
+        as: txn_groups
+        do:
+          - lookup: { from: movements_by_uuid, key: "{account.source_id}", default: [] }
+            as: rows
+          - for_each: { source: rows }
+            as_item: mv
+            as: account_txns
+            do:
+              - apply: join_present
+                args:
+                  parts: ["v2-seq", "{mv.transactionId.productId}", "{mv.transactionId.transactionSequence}"]
+                  separator: ":"
+                as: v2_uuid
+              - let: uuid
+                coalesce: ["{mv.uuid}", "{v2_uuid}"]
+              - skip_when: { uuid: { absent: true } }
+              - apply: cents
+                args: { amount: "{mv.amount}" }
+                as: amount_cents
+              - skip_when: { amount_cents: { absent: true } }
+              - skip_when: { amount_cents: { eq: 0 } }
+              - apply: cents_to_amount
+                args: { cents: "{amount_cents}" }
+                as: amount
+              - apply: reformat_date
+                args: { value: "{mv.transactionDate}", from: "%Y-%m-%d", to: "%d/%m/%Y" }
+                as: v2_date
+              - let: effective_date
+                coalesce: ["{mv.effectiveDate}", "{v2_date}"]
+              - apply: parse_date
+                args: { value: "{effective_date}", formats: "{config.ing_date_formats}" }
+                as: date
+              - skip_when: { date: { absent: true } }
+              - let: store
+                coalesce: ["{mv.store}", "{mv.concept}"]
+              - let: tran_code
+                coalesce: ["{mv.tranCode}", "{mv.transactionCode}"]
+              - let: currency
+                coalesce: ["{mv.currency}", "EUR"]
+              - apply: parse_date
+                args: { value: "{mv.clearingDate}", formats: "{config.ing_date_formats}" }
+                as: value_date
+              # description = stripped top line — whitespace-collapsed store
+              # sub-line, joined " — " (the store carries the per-line
+              # disambiguator: kid's name, meter number, SEPA reference).
+              - apply: strip
+                args: { value: "{mv.description}" }
+                as: desc_stripped
+              - apply: compact_whitespace
+                args: { value: "{store}" }
+                as: store_cw
+              - apply: join
+                args: { parts: ["{desc_stripped}", "{store_cw}"], separator: " — ", drop_empty: true }
+                as: description
+              - apply: map_status
+                args: { value: "{mv.status.description}", mapping: "{config.status_map}" }
+                as: mapped_status
+              - let: status
+                coalesce: ["{mapped_status}", "posted"]
+              # metadata.ing = the config-declared raw-field allowlist over
+              # the translated shape (nil for fields a /search row omits).
+              - apply: extract_fields
+                args:
+                  source:
+                    uuid: "{uuid}"
+                    amount: "{amount}"
+                    effectiveDate: "{effective_date}"
+                    description: "{mv.description}"
+                    store: "{store}"
+                    tranCode: "{tran_code}"
+                  mapping: "{config.raw_fields_movement}"
+                as: ing_metadata
+              - apply: build_transaction
+                args:
+                  account_id: "{account.id}"
+                  source_id: "{uuid}"
+                  amount: "{amount}"
+                  currency: "{currency}"
+                  date: "{date}"
+                  value_date: "{value_date}"
+                  description: "{description}"
+                  raw_description: "{description}"
+                  status: "{status}"
+                  metadata: { ing: "{ing_metadata}" }
+                as: txn
+              - yield: "{txn}"
+          - yield: "{account_txns}"
+      - apply: flatten
+        args: { list: "{txn_groups}" }
+        as: all_transactions
+      # Same-fetch pre-clearing dedup: ING re-emits one posting under two
+      # sequences while a charge settles (terse → enriched description).
+      # Drop the terse row when it's a strict prefix of the enriched one.
+      - apply: collapse_prefix_dups
+        args:
+          rows: "{all_transactions}"
+          group_by: [account_id, date, amount]
+          text: description
+        as: transactions
+
+    output:
+      accounts: "{accounts}"
+      transactions: "{transactions}"
+      liabilities: "{liabilities}"

@@ -1,0 +1,42 @@
+{
+  "products": [
+    {
+      "uuid": "prod-cc-1",
+      "type": 3,
+      "alias": "Tarjeta Crédito",
+      "productNumber": "5160974472951087",
+      "currency": "EUR",
+      "creditLimit": 6500.0,
+      "availableBalance": 5071.74,
+      "monthPurchasesAmount": 360.44,
+      "associatedAccount": { "productNumber": "1465" },
+      "holder": { "type": "Principal" }
+    },
+    {
+      "uuid": "prod-cc-2",
+      "type": 3,
+      "alias": "Tarjeta Crédito",
+      "productNumber": "5160974472951095",
+      "currency": "EUR",
+      "creditLimit": 6500.0,
+      "availableBalance": 5071.74,
+      "monthPurchasesAmount": 1067.82,
+      "associatedAccount": { "productNumber": "1465" },
+      "holder": { "type": "Adicional" }
+    }
+  ],
+  "movements_by_uuid": {
+    "prod-cc-1": [
+      {
+        "transactionId": { "productId": "ledger-cc-1", "transactionSequence": 618803278 },
+        "transactionDate": "2026-05-19",
+        "description": "WWW.AMAZON* NA43U4RA4          LUXEMBOURG     ",
+        "amount": "-26.59",
+        "transactionCode": "TCTPV",
+        "balance": 3862.36,
+        "transactionLocalUUID": "___V1ID___nonceX___V1ID___",
+        "mode": "P"
+      }
+    ]
+  }
+}

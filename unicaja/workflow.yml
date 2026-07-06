@@ -267,10 +267,9 @@ api_client:
         extract_batch: [movimientos, listaMovimientos]
 
 # Pure orchestration — no extractor.rb. The credit-vs-debit card filter is
-# NOT here: it's a classify-and-drop string decision, which is the
-# normalizer's job (unicaja/normalizer.rb#credit_card?). This plan fetches
-# movements for every tarjeta; the normalizer drops the debit ones (and
-# never reads their movements), so the SimpleFIN output is unchanged.
+# NOT here: it's the normalize plan's job (skip_when codtipotarjeta != "2").
+# This plan fetches movements for every tarjeta; the normalize plan drops the
+# debit accounts (and never reads their movements), so the output is unchanged.
 extract:
   plan:
     steps:
@@ -365,5 +364,372 @@ extract:
       tarjeta_movements: "{tarjeta_movements}"
 
 normalize:
-  ruby: ./normalizer.rb
-  class: Freentonic::Providers::Unicaja::Normalizer
+  plan:
+    steps:
+      - select: { from: raw, path: cuentas, default: [] }
+        as: cuentas
+      - select: { from: raw, path: tarjetas, default: [] }
+        as: tarjetas
+      - select: { from: raw, path: prestamos, default: [] }
+        as: prestamos
+      - select: { from: raw, path: cuenta_movements, default: {} }
+        as: cuenta_movements
+      - select: { from: raw, path: tarjeta_movements, default: {} }
+        as: tarjeta_movements
+      # Loan-type dispatch: indPrestamoHipotecario == "S" → mortgage, else
+      # loan. Equality-only — a real-data audit showed the flag is
+      # authoritative (a mortgage can carry a "PR. LIBRES" description), so
+      # the old description string-match fallback is dropped.
+      - let: loan_type_map
+        value: { S: mortgage }
+
+      # ================= CUENTAS → checking accounts (+ movements) =========
+      - for_each: { source: cuentas }
+        as_item: cuenta
+        as: cuenta_results
+        do:
+          - apply: pick
+            args: { key: ppp, source: "{cuenta}", aliases: "{config.field_aliases}" }
+            as: ppp
+          - skip_when: { ppp: { absent: true } }
+          - apply: pick
+            args: { key: iban, source: "{cuenta}", aliases: "{config.field_aliases}" }
+            as: iban
+          - apply: spanish_iban_portable_keys
+            args: { iban: "{iban}", bank_code: "{config.bank_code}" }
+            as: portable
+          - apply: pick
+            args: { key: balance, source: "{cuenta}", aliases: "{config.field_aliases}" }
+            as: balance_raw
+          - apply: cents
+            args: { amount: "{balance_raw}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - apply: pick
+            args: { key: currency, source: "{cuenta}", aliases: "{config.field_aliases}" }
+            as: cuenta_currency
+          - let: currency
+            coalesce: ["{cuenta_currency}", "EUR"]
+          - apply: join
+            args: { parts: ["Unicaja ", "{ppp}"] }
+            as: default_name
+          - apply: first_present
+            args: { candidates: ["{cuenta.alias}", "{cuenta.descripcion}", "{default_name}"] }
+            as: name
+          - apply: join
+            args: { parts: ["cuenta:", "{ppp}"] }
+            as: source_id
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{source_id}"
+              currency: "{currency}"
+              name: "{name}"
+              type: checking
+              iban: "{iban}"
+              portable_ref: "{portable.0}"
+              portable_id: "{portable.1}"
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata:
+                unicaja_ppp: "{ppp}"
+                unicaja_kind: cuenta
+                balance_source: "unicaja_live:listacuentas"
+            as: account
+          - lookup: { from: cuenta_movements, key: "{ppp}", default: [] }
+            as: rows
+          - for_each: { source: rows }
+            as_item: mv
+            as: txns
+            do:
+              - apply: pick
+                args: { key: movement_id, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: mv_id
+              - skip_when: { mv_id: { absent: true } }
+              - apply: pick
+                args: { key: raw_amount, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: raw_amount
+              - apply: cents
+                args: { amount: "{raw_amount}" }
+                as: amount_cents
+              - skip_when: { amount_cents: { absent: true } }
+              - skip_when: { amount_cents: { eq: 0 } }
+              - apply: cents_to_amount
+                args: { cents: "{amount_cents}" }
+                as: amount
+              - apply: pick
+                args: { key: date, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: date_raw
+              - apply: parse_date
+                args: { value: "{date_raw}", formats: "{config.unicaja_date_formats}" }
+                as: date
+              - skip_when: { date: { absent: true } }
+              - apply: pick
+                args: { key: currency, source: "{raw_amount}", aliases: "{config.field_aliases}" }
+                as: cur_from_amount
+              - apply: pick
+                args: { key: currency, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: cur_from_mv
+              - let: mv_currency
+                coalesce: ["{cur_from_amount}", "{cur_from_mv}", "{account.currency}"]
+              - apply: pick
+                args: { key: description, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: description_pick
+              - apply: strip
+                args: { value: "{description_pick}" }
+                as: description
+              - apply: pick
+                args: { key: description_raw, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: raw_description
+              - apply: build_transaction
+                args:
+                  account_id: "{account.id}"
+                  source_id: "{mv_id}"
+                  amount: "{amount}"
+                  currency: "{mv_currency}"
+                  date: "{date}"
+                  description: "{description}"
+                  raw_description: "{raw_description}"
+                  metadata: { unicaja_movement: "{mv}", ppp: "{ppp}" }
+                as: txn
+              - yield: "{txn}"
+          - yield: { account: "{account}", txns: "{txns}" }
+
+      # ================= TARJETAS → credit-card accounts (+ liability, mvmts)
+      # Only codtipotarjeta == "2" is a credit card; debit cards
+      # (codtipotarjeta "1", e.g. "MC DÉBITO DIFERIDO") are dropped. Equality
+      # -only, confirmed against a real listatarjetas dump.
+      - for_each: { source: tarjetas }
+        as_item: tarjeta
+        as: tarjeta_results
+        do:
+          - select: { from: tarjeta, path: codtipotarjeta }
+            as: codtipotarjeta
+          - skip_when: { codtipotarjeta: { neq: "2" } }
+          - apply: pick
+            args: { key: ppp, source: "{tarjeta}", aliases: "{config.field_aliases}" }
+            as: ppp
+          - skip_when: { ppp: { absent: true } }
+          - let: pan
+            coalesce: ["{tarjeta.numtarjeta}", "{tarjeta.numeroTarjeta}"]
+          - apply: card_pan_portable_keys
+            args: { pan: "{pan}", bank_code: "{config.bank_code}" }
+            as: portable
+          # Outstanding = limite − disponible (major units) → cents.
+          - apply: subtract
+            args: { a: "{tarjeta.limite.cantidad}", b: "{tarjeta.disponible.cantidad}" }
+            as: outstanding
+          - apply: cents
+            args: { amount: "{outstanding}" }
+            as: outstanding_cents
+          - apply: negate
+            args: { value: "{outstanding_cents}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - apply: cents_to_amount
+            args: { cents: "{outstanding_cents}" }
+            as: liability_balance
+          - apply: cents
+            args: { amount: "{tarjeta.limite.cantidad}" }
+            as: limit_cents
+          - apply: cents_to_amount
+            args: { cents: "{limit_cents}" }
+            as: liability_limit
+          - apply: pick
+            args: { key: currency, source: "{tarjeta}", aliases: "{config.field_aliases}" }
+            as: tarjeta_currency
+          - let: currency
+            coalesce: ["{tarjeta_currency}", "EUR"]
+          - apply: join
+            args: { parts: ["Unicaja card ", "{ppp}"] }
+            as: default_name
+          - apply: first_present
+            args:
+              candidates: ["{tarjeta.alias}", "{tarjeta.tipotarjeta}", "{default_name}", "{tarjeta.descripcion}"]
+            as: name
+          - apply: join
+            args: { parts: ["tarjeta:", "{ppp}"] }
+            as: source_id
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{source_id}"
+              currency: "{currency}"
+              name: "{name}"
+              type: credit_card
+              portable_ref: "{portable.0}"
+              portable_id: "{portable.1}"
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata:
+                unicaja_ppp: "{ppp}"
+                unicaja_kind: tarjeta
+                unicaja_codtipotarjeta: "{tarjeta.codtipotarjeta}"
+                balance_source: "unicaja_live:listatarjetas"
+            as: account
+          - apply: build_liability
+            args:
+              account_id: "{account.id}"
+              type: credit_card
+              currency: "{account.currency}"
+              source_id: "{source_id}"
+              balance: "{liability_balance}"
+              limit: "{liability_limit}"
+              metadata:
+                unicaja_codtipotarjeta: "{tarjeta.codtipotarjeta}"
+            as: liability
+          - lookup: { from: tarjeta_movements, key: "{ppp}", default: [] }
+            as: rows
+          - for_each: { source: rows }
+            as_item: mv
+            as: txns
+            do:
+              - apply: pick
+                args: { key: movement_id, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: mv_id
+              - skip_when: { mv_id: { absent: true } }
+              - apply: pick
+                args: { key: raw_amount, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: raw_amount
+              - apply: cents
+                args: { amount: "{raw_amount}" }
+                as: amount_cents
+              - skip_when: { amount_cents: { absent: true } }
+              - skip_when: { amount_cents: { eq: 0 } }
+              - apply: cents_to_amount
+                args: { cents: "{amount_cents}" }
+                as: amount
+              - apply: pick
+                args: { key: date, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: date_raw
+              - apply: parse_date
+                args: { value: "{date_raw}", formats: "{config.unicaja_date_formats}" }
+                as: date
+              - skip_when: { date: { absent: true } }
+              - apply: pick
+                args: { key: currency, source: "{raw_amount}", aliases: "{config.field_aliases}" }
+                as: cur_from_amount
+              - apply: pick
+                args: { key: currency, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: cur_from_mv
+              - let: mv_currency
+                coalesce: ["{cur_from_amount}", "{cur_from_mv}", "{account.currency}"]
+              - apply: pick
+                args: { key: description, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: description_pick
+              - apply: strip
+                args: { value: "{description_pick}" }
+                as: description
+              - apply: pick
+                args: { key: description_raw, source: "{mv}", aliases: "{config.field_aliases}" }
+                as: raw_description
+              - apply: build_transaction
+                args:
+                  account_id: "{account.id}"
+                  source_id: "{mv_id}"
+                  amount: "{amount}"
+                  currency: "{mv_currency}"
+                  date: "{date}"
+                  description: "{description}"
+                  raw_description: "{raw_description}"
+                  metadata: { unicaja_movement: "{mv}", ppp: "{ppp}" }
+                as: txn
+              - yield: "{txn}"
+          - yield: { account: "{account}", liability: "{liability}", txns: "{txns}" }
+
+      # ================= PRESTAMOS → loan accounts (+ liability) ===========
+      # Balance-only (no movements). Loans set no portable_ref, so the id
+      # falls back to (institution, source_id).
+      - for_each: { source: prestamos }
+        as_item: prestamo
+        as: prestamo_results
+        do:
+          - select: { from: prestamo, path: ppp }
+            as: ppp
+          - skip_when: { ppp: { absent: true } }
+          - lookup: { from: loan_type_map, key: "{prestamo.indPrestamoHipotecario}", default: loan }
+            as: loan_type
+          - apply: cents
+            args: { amount: "{prestamo.saldo.cantidad}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - let: currency
+            coalesce: ["{prestamo.saldo.moneda}", "EUR"]
+          - apply: join
+            args: { parts: ["Unicaja loan ", "{ppp}"] }
+            as: default_name
+          - apply: first_present
+            args: { candidates: ["{prestamo.alias}", "{prestamo.descripcion}", "{default_name}"] }
+            as: name
+          - apply: join
+            args: { parts: ["prestamo:", "{ppp}"] }
+            as: source_id
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{source_id}"
+              currency: "{currency}"
+              name: "{name}"
+              type: loan
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata:
+                unicaja_ppp: "{ppp}"
+                unicaja_kind: prestamo
+                unicaja_loan_type: "{loan_type}"
+                balance_source: "unicaja_live:listaprestamos"
+            as: account
+          - apply: build_liability
+            args:
+              account_id: "{account.id}"
+              type: "{loan_type}"
+              currency: "{account.currency}"
+              source_id: "{source_id}"
+              balance: "{balance_amount}"
+              metadata:
+                unicaja_loan_type: "{loan_type}"
+            as: liability
+          - yield: { account: "{account}", liability: "{liability}" }
+
+      # ================= combine =================
+      - apply: pluck
+        args: { list: "{cuenta_results}", key: account }
+        as: cuenta_accounts
+      - apply: pluck
+        args: { list: "{cuenta_results}", key: txns }
+        as: cuenta_txn_groups
+      - apply: pluck
+        args: { list: "{tarjeta_results}", key: account }
+        as: tarjeta_accounts
+      - apply: pluck
+        args: { list: "{tarjeta_results}", key: liability }
+        as: tarjeta_liabilities
+      - apply: pluck
+        args: { list: "{tarjeta_results}", key: txns }
+        as: tarjeta_txn_groups
+      - apply: pluck
+        args: { list: "{prestamo_results}", key: account }
+        as: prestamo_accounts
+      - apply: pluck
+        args: { list: "{prestamo_results}", key: liability }
+        as: prestamo_liabilities
+      - concat: [cuenta_accounts, tarjeta_accounts, prestamo_accounts]
+        as: accounts
+      - concat: [tarjeta_liabilities, prestamo_liabilities]
+        as: liabilities
+      - apply: flatten
+        args: { list: "{cuenta_txn_groups}" }
+        as: cuenta_transactions
+      - apply: flatten
+        args: { list: "{tarjeta_txn_groups}" }
+        as: tarjeta_transactions
+      - concat: [cuenta_transactions, tarjeta_transactions]
+        as: transactions
+
+    output:
+      accounts: "{accounts}"
+      transactions: "{transactions}"
+      liabilities: "{liabilities}"

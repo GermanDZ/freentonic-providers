@@ -1,0 +1,59 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 0,
+      "liabilities": 1,
+      "investments": 0
+    },
+    "amounts_by_currency": {},
+    "balances_by_currency": {
+      "EUR": "320367.53"
+    },
+    "date_range": null
+  },
+  "meta": {
+    "scraper_version": "unicaja/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_175a2be0739ca0cb",
+      "source_id": "prestamo:001",
+      "portable_id": null,
+      "institution": "unicaja",
+      "name": "hipoteca fuentelucha",
+      "type": "loan",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "320367.53",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "unicaja_ppp": "001",
+        "unicaja_kind": "prestamo",
+        "unicaja_loan_type": "mortgage",
+        "balance_source": "unicaja_live:listaprestamos"
+      }
+    }
+  ],
+  "transactions": [],
+  "liabilities": [
+    {
+      "id": "liab_caaede1acc75f6d1",
+      "source_id": "prestamo:001",
+      "type": "mortgage",
+      "account_id": "acc_175a2be0739ca0cb",
+      "balance": "320367.53",
+      "limit": null,
+      "currency": "EUR",
+      "due_date": null,
+      "metadata": {
+        "unicaja_loan_type": "mortgage"
+      }
+    }
+  ],
+  "investments": []
+}

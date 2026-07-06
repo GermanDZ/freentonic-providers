@@ -1,0 +1,33 @@
+{
+  "products": [
+    {
+      "uuid": "prod-asset-2",
+      "type": 20,
+      "alias": "Cuenta NARANJA",
+      "productNumber": "ES5914650100981714397251",
+      "iban": "ES59 1465 0100 9817 1439 7251",
+      "currency": "EUR",
+      "balance": 500.0
+    }
+  ],
+  "movements_by_uuid": {
+    "prod-asset-2": [
+      {
+        "transactionId": { "productId": "ledger-asset-2", "transactionSequence": 7001 },
+        "transactionDate": "2026-05-21",
+        "description": "WWW.AMAZON",
+        "amount": "-26.38",
+        "transactionCode": "TCTPV",
+        "mode": "P"
+      },
+      {
+        "transactionId": { "productId": "ledger-asset-2", "transactionSequence": 7002 },
+        "transactionDate": "2026-05-21",
+        "description": "WWW.AMAZON*NO3CS7J44           LUXEMBOURG",
+        "amount": "-26.38",
+        "transactionCode": "TCTPV",
+        "mode": "P"
+      }
+    ]
+  }
+}

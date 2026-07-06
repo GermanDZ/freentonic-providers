@@ -1,0 +1,36 @@
+{
+  "cuentas": [
+    {
+      "ppp": "004",
+      "iban": "ES1421037843380030279999",
+      "descripcion": "CTA CTE.PACK SIN/PAC",
+      "alias": "Principal",
+      "saldo": { "cantidad": 1520.37, "moneda": "EUR" }
+    }
+  ],
+  "tarjetas": [],
+  "prestamos": [],
+  "cuenta_movements": {
+    "004": [
+      {
+        "fechaOperacion": "2026-07-01",
+        "concepto": "C.P SONRIS NOVEDADES",
+        "numMovimiento": "000000404",
+        "importeMovimiento": { "cantidad": -180.54, "moneda": "EUR" },
+        "saldo": { "cantidad": 1520.37, "moneda": "EUR" },
+        "categoria": "ID44",
+        "indAplazable": "N"
+      },
+      {
+        "fechaOperacion": "2026-06-28",
+        "concepto": "NOMINA JULIO",
+        "numMovimiento": "000000398",
+        "importeMovimiento": { "cantidad": 2500.00, "moneda": "EUR" },
+        "saldo": { "cantidad": 1700.91, "moneda": "EUR" },
+        "categoria": "ID10",
+        "indAplazable": "N"
+      }
+    ]
+  },
+  "tarjeta_movements": {}
+}

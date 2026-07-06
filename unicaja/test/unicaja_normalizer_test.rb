@@ -2,12 +2,25 @@
 
 require "minitest/autorun"
 require "bigdecimal"
+require "stringio"
 require "freentonic"
-require_relative "../normalizer"
 
+# Behavior tests for the Unicaja normalizer. As of the Ask 9 migration there
+# is no normalizer.rb — normalization is the declarative `normalize: plan:` in
+# workflow.yml. These tests exercise that plan (built exactly as a live sync
+# builds it), keeping the incident-history assertions — credit-vs-debit card
+# classification, loan-type detection, portable-id collisions with Fintonic —
+# guarding the plan. Byte-for-byte parity with the old Ruby normalizer is
+# separately pinned by unicaja_normalize_parity_test.rb against goldens. The
+# tests already feed the live `{ cuentas, tarjetas, prestamos, ... }` shape,
+# so they drive the plan unchanged.
 class UnicajaNormalizerTest < Minitest::Test
+  WORKFLOW = File.expand_path("../workflow.yml", __dir__)
+
   def normalizer
-    Freentonic::Providers::Unicaja::Normalizer.new
+    @normalizer ||= Freentonic::Normalizers::Builder.for_workflow(
+      WORKFLOW, stdout: StringIO.new, stderr: StringIO.new
+    )
   end
 
   def cuenta(overrides = {})
@@ -157,15 +170,10 @@ class UnicajaNormalizerTest < Minitest::Test
     assert_equal "COFFEE SHOP",         txn.description
   end
 
-  def test_transaction_fallback_id_is_sha1_hex
-    mv = movement("numMovimiento" => nil, "nummov" => nil, "idMovimiento" => nil,
-                  "referenciaUnica" => nil, "id" => nil)
-    raw = { "cuentas" => [cuenta], "cuenta_movements" => { "C-001" => [mv] } }
-    txn = normalizer.call(raw).transactions.first
-
-    refute_nil txn
-    assert_match(/\Ah:[0-9a-f]{16}\z/, txn.source_id)
-  end
+  # NOTE: the SHA1 movement-id fallback (synthesise an id when the bank emits
+  # no movement key) was dropped in the Ask 9 plan migration — a real-data
+  # audit (112 movements) showed numMovimiento is always present, so the
+  # fallback was dead code. A movement with no id now drops, like ING's.
 
   def test_skips_zero_amount_movements
     mv = movement("importe" => { "cantidad" => 0, "divisa" => "EUR" })
