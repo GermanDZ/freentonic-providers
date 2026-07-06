@@ -59,11 +59,16 @@
       "metadata": {
         "revolut": {
           "id": "tx-ok",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -500,
           "currency": "EUR",
           "description": "Valid",
-          "state": "COMPLETED"
+          "type": null,
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     }

@@ -59,12 +59,16 @@
       "metadata": {
         "revolut": {
           "id": "only-id-1",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -100,
           "currency": "EUR",
           "description": "x",
           "type": "CARD_PAYMENT",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     }

@@ -115,23 +115,11 @@ api_client:
     - name: fetch_wallet
       method: GET
       path: "/user/current/wallet"
-    - name: fetch_wallets
-      method: GET
-      path: "/wallets"
-    - name: fetch_accounts
-      method: GET
-      path: "/user/current/accounts"
     - name: fetch_bank_details
       method: GET
       path: "/bank-accounts/account-details"
       params:
         currency: "{currency}"
-    - name: fetch_cards
-      method: GET
-      path: "/my-card/all"
-    - name: fetch_card_detail
-      method: GET
-      path: "/my-card/{card_id}/v2"
     - name: fetch_vaults
       method: GET
       path: "/user/current/money-boxes"
@@ -162,9 +150,6 @@ api_client:
           cursor_gt: { field: to, value: "{from_ms}" }
       response:
         extract_batch: [transactions, items]
-    - name: fetch_cashback
-      method: GET
-      path: "/cashback"
 
 extract:
   plan:
@@ -194,11 +179,8 @@ extract:
           - yield: { currency: "{currency}", details: "{detail}" }
             skip_if_nil: detail
 
-      # Cards + vaults — non-critical, nil-on-failure (no default:, to
-      # match the Ruby extractor which stored nil, not []).
-      - fetch: fetch_cards
-        as: cards
-        safe: true
+      # Vaults — non-critical, nil-on-failure (no default:, to match the
+      # Ruby extractor which stored nil, not []).
       - fetch: fetch_vaults
         as: vaults
         safe: true
@@ -223,7 +205,6 @@ extract:
       wallet: "{wallet}"
       pockets: "{pockets}"
       bank_details: "{bank_details}"
-      cards: "{cards}"
       vaults: "{vaults}"
       pocket_transactions: "{pocket_transactions}"
 
@@ -351,6 +332,13 @@ normalize:
               - let: merchant
                 value: { name: "{merchant_name}", normalized: true }
                 when: { merchant_name_ok: { present: true } }
+              # metadata.revolut = the config-declared raw-field allowlist,
+              # not the full raw tx (which carries legs/counterparty/etc).
+              - apply: extract_fields
+                args:
+                  source: "{tx}"
+                  mapping: "{config.raw_fields_transaction}"
+                as: revolut_metadata
               - apply: build_transaction
                 args:
                   account_id: "{account.id}"
@@ -362,7 +350,7 @@ normalize:
                   raw_description: "{raw_description}"
                   status: "{status}"
                   merchant: "{merchant}"
-                  metadata: { revolut: "{tx}" }
+                  metadata: { revolut: "{revolut_metadata}" }
                 as: txn
               - yield: "{txn}"
           - yield: { account: "{account}", txns: "{txns}" }
@@ -393,6 +381,13 @@ normalize:
           - apply: cents_to_amount
             args: { cents: "{balance_cents}" }
             as: balance_amount
+          - apply: compact
+            args:
+              hash:
+                revolut_vault_id: "{vault_id}"
+                revolut_goal: "{vault.goal}"
+                balance_source: "revolut_live:vault"
+            as: vault_metadata
           - apply: build_account
             args:
               institution: "{config.institution}"
@@ -401,10 +396,7 @@ normalize:
               name: "{name}"
               type: savings
               balance: { current: "{balance_amount}", timestamp: null }
-              metadata:
-                revolut_vault_id: "{vault_id}"
-                revolut_goal: "{vault.goal}"
-                balance_source: "revolut_live:vault"
+              metadata: "{vault_metadata}"
             as: account
           - yield: "{account}"
 

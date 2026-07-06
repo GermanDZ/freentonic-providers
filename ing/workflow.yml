@@ -70,11 +70,14 @@ phases:
     - action: enter_pin_pad
       selector: "ing-pin-pad"
       pin: "secret(USER_PIN)"
-    - action: note_if_selector
-      selector: "push-notification-page[data-page-id=\"NOTIFICATION_PUSH\"]"
-      message: "⏳ ING requires 2FA — open the ING app on your phone and approve the login notification."
-    - action: wait_url
-      includes: "pfm/#overall-position"
+    # Structured await: surfaces a "waiting for your approval" card in the
+    # admin UI (with a live spinner) instead of silent progress dots, and
+    # no-ops immediately if the session is already past this URL. Mirrors
+    # Revolut's approve_2fa phase. On a tty/local run this degrades to a
+    # plain wait_url.
+    - action: await_external_approval
+      message: "ING requires 2FA — open the ING app on your phone and approve the login notification. This continues automatically once approved."
+      url_includes: "pfm/#overall-position"
       timeout: 120
   post_login:
     - action: navigate

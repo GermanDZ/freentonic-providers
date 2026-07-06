@@ -61,12 +61,16 @@
       "metadata": {
         "revolut": {
           "id": "tx-1",
-          "startedDate": 1710504000000,
+          "legId": null,
           "amount": -1234,
           "currency": "EUR",
           "description": "Coffee Shop",
           "type": "CARD_PAYMENT",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710504000000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     },
@@ -86,12 +90,16 @@
       "metadata": {
         "revolut": {
           "id": "tx-2",
-          "startedDate": 1710417600000,
+          "legId": null,
           "amount": 50000,
           "currency": "EUR",
           "description": "Bank Transfer",
           "type": "TRANSFER",
-          "state": "COMPLETED"
+          "state": "COMPLETED",
+          "merchant": null,
+          "startedDate": 1710417600000,
+          "completedDate": null,
+          "createdDate": null
         }
       }
     }
