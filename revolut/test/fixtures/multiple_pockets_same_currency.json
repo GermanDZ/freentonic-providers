@@ -1,0 +1,12 @@
+{
+  "wallet": {},
+  "pockets": [
+    { "id": "p-main",  "currency": "EUR", "balance": 22437, "name": "Revolut EUR" },
+    { "id": "p-saved", "currency": "EUR", "balance": 0,     "name": "Experimento 1" },
+    { "id": "p-mmf",   "currency": "EUR", "balance": 0,     "name": "MMF:aff2f52c-1f4c-40f2-a601-07fe17ec0bd2" }
+  ],
+  "bank_details": [
+    { "currency": "EUR", "details": { "accounts": [{ "iban": "LT00 1234 5678 9012 3456" }] } }
+  ],
+  "vaults": []
+}

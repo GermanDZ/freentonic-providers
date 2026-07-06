@@ -1,0 +1,11 @@
+{
+  "wallet": {},
+  "pockets": [{ "id": "p1", "currency": "EUR", "balance": 0 }],
+  "bank_details": [],
+  "vaults": [],
+  "pocket_transactions": {
+    "p1": [
+      { "id": "only-id-1", "startedDate": 1710504000000, "amount": -100, "currency": "EUR", "description": "x", "type": "CARD_PAYMENT", "state": "COMPLETED" }
+    ]
+  }
+}

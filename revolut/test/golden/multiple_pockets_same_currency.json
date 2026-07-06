@@ -1,0 +1,84 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 3,
+      "transactions": 0,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {},
+    "balances_by_currency": {
+      "EUR": "224.37"
+    },
+    "date_range": null
+  },
+  "meta": {
+    "scraper_version": "revolut/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_c2cf5647e4783f9a",
+      "source_id": "pocket:p-main",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Revolut EUR",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "224.37",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "p-main",
+        "revolut_parent_iban": "LT00 1234 5678 9012 3456",
+        "balance_source": "revolut_live:wallet"
+      }
+    },
+    {
+      "id": "acc_adfffa2960a9f728",
+      "source_id": "pocket:p-saved",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Experimento 1",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "0.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "p-saved",
+        "revolut_parent_iban": "LT00 1234 5678 9012 3456",
+        "balance_source": "revolut_live:wallet"
+      }
+    },
+    {
+      "id": "acc_d5dd5224574ce6fe",
+      "source_id": "pocket:p-mmf",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "MMF:aff2f52c-1f4c-40f2-a601-07fe17ec0bd2",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "0.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "p-mmf",
+        "revolut_parent_iban": "LT00 1234 5678 9012 3456",
+        "balance_source": "revolut_live:wallet"
+      }
+    }
+  ],
+  "transactions": [],
+  "liabilities": [],
+  "investments": []
+}

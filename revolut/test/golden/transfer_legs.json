@@ -1,0 +1,101 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 2,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "0.0"
+    },
+    "balances_by_currency": {
+      "EUR": "0.0"
+    },
+    "date_range": {
+      "earliest": "2018-09-05",
+      "latest": "2018-09-05"
+    }
+  },
+  "meta": {
+    "scraper_version": "revolut/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_2d03627e4168bdeb",
+      "source_id": "pocket:p1",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Revolut EUR",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "0.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "p1",
+        "balance_source": "revolut_live:wallet"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_165f316b42264828",
+      "source_id": "7c90ac30-5c9f-4dd8-0000-9f48390a65b8",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2018-09-05",
+      "value_date": null,
+      "amount": "-50.86",
+      "currency": "EUR",
+      "description": "To EUR",
+      "raw_description": "To EUR",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "7c90ac30-5c9f-4dd8-aa4b-9f48390a65b8",
+          "legId": "7c90ac30-5c9f-4dd8-0000-9f48390a65b8",
+          "startedDate": 1536105600000,
+          "amount": -5086,
+          "currency": "EUR",
+          "description": "To EUR",
+          "type": "TRANSFER",
+          "state": "COMPLETED"
+        }
+      }
+    },
+    {
+      "id": "txn_3c5b487d0ebdb61c",
+      "source_id": "7c90ac30-5c9f-4dd8-0001-9f48390a65b8",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2018-09-05",
+      "value_date": null,
+      "amount": "50.86",
+      "currency": "EUR",
+      "description": "From EUR Experimento 1",
+      "raw_description": "From EUR Experimento 1",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "7c90ac30-5c9f-4dd8-aa4b-9f48390a65b8",
+          "legId": "7c90ac30-5c9f-4dd8-0001-9f48390a65b8",
+          "startedDate": 1536105600000,
+          "amount": 5086,
+          "currency": "EUR",
+          "description": "From EUR Experimento 1",
+          "type": "TRANSFER",
+          "state": "COMPLETED"
+        }
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}

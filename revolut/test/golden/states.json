@@ -1,0 +1,193 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 6,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "-6.0"
+    },
+    "balances_by_currency": {
+      "EUR": "0.0"
+    },
+    "date_range": {
+      "earliest": "2024-03-15",
+      "latest": "2024-03-15"
+    }
+  },
+  "meta": {
+    "scraper_version": "revolut/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_2d03627e4168bdeb",
+      "source_id": "pocket:p1",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Revolut EUR",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "0.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "p1",
+        "balance_source": "revolut_live:wallet"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_b06a5e114a530bd7",
+      "source_id": "ok",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-1.0",
+      "currency": "EUR",
+      "description": "x",
+      "raw_description": "x",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "ok",
+          "startedDate": 1710504000000,
+          "amount": -100,
+          "currency": "EUR",
+          "description": "x",
+          "state": "COMPLETED"
+        }
+      }
+    },
+    {
+      "id": "txn_f18551e515992250",
+      "source_id": "pending",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-1.0",
+      "currency": "EUR",
+      "description": "x",
+      "raw_description": "x",
+      "status": "pending",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "pending",
+          "startedDate": 1710504000000,
+          "amount": -100,
+          "currency": "EUR",
+          "description": "x",
+          "state": "PENDING"
+        }
+      }
+    },
+    {
+      "id": "txn_bd5673288737e9c4",
+      "source_id": "declined",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-1.0",
+      "currency": "EUR",
+      "description": "x",
+      "raw_description": "x",
+      "status": "declined",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "declined",
+          "startedDate": 1710504000000,
+          "amount": -100,
+          "currency": "EUR",
+          "description": "x",
+          "state": "DECLINED"
+        }
+      }
+    },
+    {
+      "id": "txn_50c8bce4a0c12d3f",
+      "source_id": "failed",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-1.0",
+      "currency": "EUR",
+      "description": "x",
+      "raw_description": "x",
+      "status": "failed",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "failed",
+          "startedDate": 1710504000000,
+          "amount": -100,
+          "currency": "EUR",
+          "description": "x",
+          "state": "FAILED"
+        }
+      }
+    },
+    {
+      "id": "txn_e607c392401c26a9",
+      "source_id": "reverted",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-1.0",
+      "currency": "EUR",
+      "description": "x",
+      "raw_description": "x",
+      "status": "reverted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "reverted",
+          "startedDate": 1710504000000,
+          "amount": -100,
+          "currency": "EUR",
+          "description": "x",
+          "state": "REVERTED"
+        }
+      }
+    },
+    {
+      "id": "txn_85cfc92b07cd3b7e",
+      "source_id": "unknown",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-1.0",
+      "currency": "EUR",
+      "description": "x",
+      "raw_description": "x",
+      "status": null,
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "unknown",
+          "startedDate": 1710504000000,
+          "amount": -100,
+          "currency": "EUR",
+          "description": "x",
+          "state": "QUANTUM_SUPERPOSITION"
+        }
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}

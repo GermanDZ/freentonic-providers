@@ -2,12 +2,24 @@
 
 require "minitest/autorun"
 require "bigdecimal"
+require "stringio"
 require "freentonic"
-require_relative "../normalizer"
 
+# Behavior tests for the Revolut normalizer. As of the Ask 8 migration
+# there is no normalizer.rb — normalization is the declarative
+# `normalize: plan:` in workflow.yml. These tests exercise that plan (built
+# exactly as a live sync builds it) so the incident-history assertions
+# they encode — per-leg transfer ids, pocket-IBAN suppression, state→status
+# mapping, id determinism — keep guarding the plan. Byte-for-byte parity
+# with the old Ruby normalizer is separately pinned by
+# revolut_normalize_parity_test.rb against committed goldens.
 class RevolutNormalizerTest < Minitest::Test
+  WORKFLOW = File.expand_path("../workflow.yml", __dir__)
+
   def normalizer
-    Freentonic::Providers::Revolut::Normalizer.new
+    Freentonic::Normalizers::Builder.for_workflow(
+      WORKFLOW, stdout: StringIO.new, stderr: StringIO.new
+    )
   end
 
   def pocket_raw
@@ -119,6 +131,31 @@ class RevolutNormalizerTest < Minitest::Test
     assert_equal Date.new(2024, 3, 15),     txn.date
     assert_equal "Coffee Shop",            txn.description
     assert_equal "Coffee Shop",            txn.raw_description
+  end
+
+  # A near-midnight instant is booked by the MADRID calendar day, not UTC.
+  # 1_710_457_200_000 ms = 2024-03-14 23:00:00 UTC = 2024-03-15 00:00 in
+  # Madrid (CET, +01:00 in March). config.yml sets output_timezone:
+  # Europe/Madrid, so the transaction lands on the 15th — the day the user
+  # saw it in the app — where a UTC bucket would (wrongly, for us) say the
+  # 14th. Locks the Spain-based booking-zone contract.
+  def test_transaction_dates_book_by_madrid_calendar_day
+    raw = {
+      "wallet"  => {},
+      "pockets" => [{ "id" => "p1", "currency" => "EUR", "balance" => 0 }],
+      "bank_details" => [],
+      "vaults" => [],
+      "pocket_transactions" => {
+        "p1" => [
+          { "id" => "near-midnight", "startedDate" => 1_710_457_200_000,
+            "amount" => -500, "currency" => "EUR", "description" => "Late night",
+            "state" => "COMPLETED" }
+        ]
+      }
+    }
+    txn = normalizer.call(raw).transactions.first
+    assert_equal Date.new(2024, 3, 15), txn.date,
+                 "near-midnight UTC instant must book on the Madrid day"
   end
 
   # --- vaults ------------------------------------------------------------

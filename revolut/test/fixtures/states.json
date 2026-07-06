@@ -1,0 +1,16 @@
+{
+  "wallet": {},
+  "pockets": [{ "id": "p1", "currency": "EUR", "balance": 0 }],
+  "bank_details": [],
+  "vaults": [],
+  "pocket_transactions": {
+    "p1": [
+      { "id": "ok",       "startedDate": 1710504000000, "amount": -100, "currency": "EUR", "description": "x", "state": "COMPLETED" },
+      { "id": "pending",  "startedDate": 1710504000000, "amount": -100, "currency": "EUR", "description": "x", "state": "PENDING" },
+      { "id": "declined", "startedDate": 1710504000000, "amount": -100, "currency": "EUR", "description": "x", "state": "DECLINED" },
+      { "id": "failed",   "startedDate": 1710504000000, "amount": -100, "currency": "EUR", "description": "x", "state": "FAILED" },
+      { "id": "reverted", "startedDate": 1710504000000, "amount": -100, "currency": "EUR", "description": "x", "state": "REVERTED" },
+      { "id": "unknown",  "startedDate": 1710504000000, "amount": -100, "currency": "EUR", "description": "x", "state": "QUANTUM_SUPERPOSITION" }
+    ]
+  }
+}

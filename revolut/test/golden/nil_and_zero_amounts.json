@@ -1,0 +1,73 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 1,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "-5.0"
+    },
+    "balances_by_currency": {
+      "EUR": "100.0"
+    },
+    "date_range": {
+      "earliest": "2024-03-15",
+      "latest": "2024-03-15"
+    }
+  },
+  "meta": {
+    "scraper_version": "revolut/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_2d03627e4168bdeb",
+      "source_id": "pocket:p1",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Revolut EUR",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "100.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "p1",
+        "balance_source": "revolut_live:wallet"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_d7cf8a7aaeba9e02",
+      "source_id": "tx-ok",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-5.0",
+      "currency": "EUR",
+      "description": "Valid",
+      "raw_description": "Valid",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "tx-ok",
+          "startedDate": 1710504000000,
+          "amount": -500,
+          "currency": "EUR",
+          "description": "Valid",
+          "state": "COMPLETED"
+        }
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}
