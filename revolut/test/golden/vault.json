@@ -1,0 +1,44 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 0,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {},
+    "balances_by_currency": {
+      "EUR": "350.0"
+    },
+    "date_range": null
+  },
+  "meta": {
+    "scraper_version": "revolut/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_13102ae7e8dbdefe",
+      "source_id": "vault:vault-1",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Holiday Fund",
+      "type": "savings",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "350.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_vault_id": "vault-1",
+        "revolut_goal": 1000.0,
+        "balance_source": "revolut_live:vault"
+      }
+    }
+  ],
+  "transactions": [],
+  "liabilities": [],
+  "investments": []
+}

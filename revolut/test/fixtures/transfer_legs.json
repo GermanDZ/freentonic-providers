@@ -1,0 +1,30 @@
+{
+  "wallet": {},
+  "pockets": [{ "id": "p1", "currency": "EUR", "balance": 0 }],
+  "bank_details": [],
+  "vaults": [],
+  "pocket_transactions": {
+    "p1": [
+      {
+        "id": "7c90ac30-5c9f-4dd8-aa4b-9f48390a65b8",
+        "legId": "7c90ac30-5c9f-4dd8-0000-9f48390a65b8",
+        "startedDate": 1536105600000,
+        "amount": -5086,
+        "currency": "EUR",
+        "description": "To EUR",
+        "type": "TRANSFER",
+        "state": "COMPLETED"
+      },
+      {
+        "id": "7c90ac30-5c9f-4dd8-aa4b-9f48390a65b8",
+        "legId": "7c90ac30-5c9f-4dd8-0001-9f48390a65b8",
+        "startedDate": 1536105600000,
+        "amount": 5086,
+        "currency": "EUR",
+        "description": "From EUR Experimento 1",
+        "type": "TRANSFER",
+        "state": "COMPLETED"
+      }
+    ]
+  }
+}

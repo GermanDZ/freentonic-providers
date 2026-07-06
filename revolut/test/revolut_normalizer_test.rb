@@ -2,12 +2,24 @@
 
 require "minitest/autorun"
 require "bigdecimal"
+require "stringio"
 require "freentonic"
-require_relative "../normalizer"
 
+# Behavior tests for the Revolut normalizer. As of the Ask 8 migration
+# there is no normalizer.rb — normalization is the declarative
+# `normalize: plan:` in workflow.yml. These tests exercise that plan (built
+# exactly as a live sync builds it) so the incident-history assertions
+# they encode — per-leg transfer ids, pocket-IBAN suppression, state→status
+# mapping, id determinism — keep guarding the plan. Byte-for-byte parity
+# with the old Ruby normalizer is separately pinned by
+# revolut_normalize_parity_test.rb against committed goldens.
 class RevolutNormalizerTest < Minitest::Test
+  WORKFLOW = File.expand_path("../workflow.yml", __dir__)
+
   def normalizer
-    Freentonic::Providers::Revolut::Normalizer.new
+    Freentonic::Normalizers::Builder.for_workflow(
+      WORKFLOW, stdout: StringIO.new, stderr: StringIO.new
+    )
   end
 
   def pocket_raw

@@ -23,6 +23,57 @@ task test: provider_dirs.map { |p| "test:#{p}" }
 
 task default: :test
 
+# --- Golden canonical payloads --------------------------------------------
+#
+# Golden-parity harness for the normalizer migration (Ruby → normalize:
+# plan:). For each raw payload in <provider>/test/fixtures/*.json, dumps
+# the canonical payload the provider's workflow-configured normalizer
+# produces to <provider>/test/golden/<name>.json.
+#
+# Protocol: run `rake golden:dump[revolut]` with the CURRENT (Ruby)
+# normalizer, commit the goldens, then write the plan. The provider's
+# parity test asserts the plan reproduces every golden byte-for-byte;
+# the goldens stay as the permanent regression net after normalizer.rb
+# is deleted. Re-dumping post-migration (against the plan) is only for a
+# deliberate canonical-model change — never to paper over a diff.
+namespace :golden do
+  desc "Dump golden canonical payloads for a provider: rake golden:dump[revolut]"
+  task :dump, [:provider] do |_, args|
+    require "json"
+    require "stringio"
+    require "fileutils"
+    require "freentonic"
+
+    provider = args[:provider] or abort "Usage: rake golden:dump[provider_name]"
+    workflow = File.join(provider, "workflow.yml")
+    abort "No workflow at #{workflow}" unless File.exist?(workflow)
+
+    fixtures = Dir[File.join(provider, "test", "fixtures", "*.json")].sort
+    abort "No fixtures in #{provider}/test/fixtures/" if fixtures.empty?
+
+    golden_dir = File.join(provider, "test", "golden")
+    FileUtils.mkdir_p(golden_dir)
+
+    normalizer = Freentonic::Normalizers::Builder.for_workflow(
+      workflow, stdout: StringIO.new, stderr: StringIO.new
+    )
+
+    fixtures.each do |fixture|
+      name = File.basename(fixture, ".json")
+      raw  = JSON.parse(File.read(fixture))
+      hash = normalizer.call(raw).to_h
+      # summary.generated_at is wall-clock — strip it so goldens are
+      # deterministic and the plan-parity test can compare byte-for-byte.
+      # The parity test strips the same field from the plan's output.
+      hash["summary"]&.delete("generated_at")
+      out = File.join(golden_dir, "#{name}.json")
+      File.write(out, "#{JSON.pretty_generate(hash)}\n")
+      puts "  #{fixture} → #{out}"
+    end
+    puts "Dumped #{fixtures.size} golden(s) for #{provider}."
+  end
+end
+
 # --- Scaffold a new provider ---
 
 desc "Scaffold a new provider: rake new[provider_name]"

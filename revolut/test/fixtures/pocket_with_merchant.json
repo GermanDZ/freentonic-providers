@@ -1,0 +1,40 @@
+{
+  "wallet": { "id": "w1" },
+  "pockets": [
+    {
+      "id": "pocket-eur-1",
+      "name": "Main EUR",
+      "currency": "EUR",
+      "balance": 123456,
+      "type": "CURRENT"
+    }
+  ],
+  "bank_details": [
+    { "currency": "EUR", "details": { "accounts": [{ "iban": "LT00 1234 5678 9012 3456" }] } }
+  ],
+  "cards": [],
+  "vaults": [],
+  "pocket_transactions": {
+    "pocket-eur-1": [
+      {
+        "id": "tx-1",
+        "startedDate": 1710504000000,
+        "amount": -1234,
+        "currency": "EUR",
+        "description": "Coffee Shop",
+        "type": "CARD_PAYMENT",
+        "state": "COMPLETED",
+        "merchant": { "name": "STARBUCKS" }
+      },
+      {
+        "id": "tx-2",
+        "startedDate": 1710417600000,
+        "amount": 50000,
+        "currency": "EUR",
+        "description": "Bank Transfer",
+        "type": "TRANSFER",
+        "state": "COMPLETED"
+      }
+    ]
+  }
+}

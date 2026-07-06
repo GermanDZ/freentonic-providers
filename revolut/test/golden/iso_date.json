@@ -1,0 +1,73 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 1,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "-1.0"
+    },
+    "balances_by_currency": {
+      "EUR": "0.0"
+    },
+    "date_range": {
+      "earliest": "2024-03-15",
+      "latest": "2024-03-15"
+    }
+  },
+  "meta": {
+    "scraper_version": "revolut/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_2d03627e4168bdeb",
+      "source_id": "pocket:p1",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Revolut EUR",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "0.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "p1",
+        "balance_source": "revolut_live:wallet"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_899e44cdc3cf2847",
+      "source_id": "tx-iso",
+      "account_id": "acc_2d03627e4168bdeb",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-1.0",
+      "currency": "EUR",
+      "description": "Test",
+      "raw_description": "Test",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "tx-iso",
+          "startedDate": "2024-03-15T10:00:00.000Z",
+          "amount": -100,
+          "currency": "EUR",
+          "description": "Test",
+          "state": "COMPLETED"
+        }
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}

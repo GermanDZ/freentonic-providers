@@ -1,0 +1,16 @@
+{
+  "wallet": {},
+  "pockets": [],
+  "bank_details": [],
+  "cards": [],
+  "vaults": [
+    {
+      "id": "vault-1",
+      "name": "Holiday Fund",
+      "currency": "EUR",
+      "balance": { "amount": 350.0, "currency": "EUR" },
+      "goal": 1000.0
+    }
+  ],
+  "pocket_transactions": {}
+}

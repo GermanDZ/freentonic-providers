@@ -1,0 +1,101 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 2,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "487.66"
+    },
+    "balances_by_currency": {
+      "EUR": "1234.56"
+    },
+    "date_range": {
+      "earliest": "2024-03-14",
+      "latest": "2024-03-15"
+    }
+  },
+  "meta": {
+    "scraper_version": "revolut/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_a3123d293b947e6c",
+      "source_id": "pocket:pocket-eur-1",
+      "portable_id": null,
+      "institution": "revolut",
+      "name": "Main EUR",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "1234.56",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "revolut_pocket_id": "pocket-eur-1",
+        "revolut_type": "CURRENT",
+        "revolut_parent_iban": "LT00 1234 5678 9012 3456",
+        "balance_source": "revolut_live:wallet"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_542719e318f3af25",
+      "source_id": "tx-1",
+      "account_id": "acc_a3123d293b947e6c",
+      "date": "2024-03-15",
+      "value_date": null,
+      "amount": "-12.34",
+      "currency": "EUR",
+      "description": "Coffee Shop",
+      "raw_description": "Coffee Shop",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "tx-1",
+          "startedDate": 1710504000000,
+          "amount": -1234,
+          "currency": "EUR",
+          "description": "Coffee Shop",
+          "type": "CARD_PAYMENT",
+          "state": "COMPLETED"
+        }
+      }
+    },
+    {
+      "id": "txn_7bef0a995dc35ba1",
+      "source_id": "tx-2",
+      "account_id": "acc_a3123d293b947e6c",
+      "date": "2024-03-14",
+      "value_date": null,
+      "amount": "500.0",
+      "currency": "EUR",
+      "description": "Bank Transfer",
+      "raw_description": "Bank Transfer",
+      "status": "posted",
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "revolut": {
+          "id": "tx-2",
+          "startedDate": 1710417600000,
+          "amount": 50000,
+          "currency": "EUR",
+          "description": "Bank Transfer",
+          "type": "TRANSFER",
+          "state": "COMPLETED"
+        }
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}

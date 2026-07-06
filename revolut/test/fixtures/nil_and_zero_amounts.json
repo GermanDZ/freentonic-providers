@@ -1,0 +1,14 @@
+{
+  "wallet": {},
+  "pockets": [{ "id": "p1", "currency": "EUR", "balance": 10000 }],
+  "bank_details": [],
+  "cards": [],
+  "vaults": [],
+  "pocket_transactions": {
+    "p1": [
+      { "id": "tx-ok",   "startedDate": 1710504000000, "amount": -500, "currency": "EUR", "description": "Valid",     "state": "COMPLETED" },
+      { "id": "tx-nil",  "startedDate": 1710504000000, "amount": null, "description": "No amount", "state": "COMPLETED" },
+      { "id": "tx-zero", "startedDate": 1710504000000, "amount": 0,    "description": "Zero",      "state": "COMPLETED" }
+    ]
+  }
+}

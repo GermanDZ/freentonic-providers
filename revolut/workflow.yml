@@ -228,5 +228,195 @@ extract:
       pocket_transactions: "{pocket_transactions}"
 
 normalize:
-  ruby: ./normalizer.rb
-  class: Freentonic::Providers::Revolut::Normalizer
+  plan:
+    steps:
+      # --- shared: IBAN-by-currency map -----------------------------------
+      # Revolut pockets share the parent wallet's IBAN per currency. Build a
+      # currency → first-iban-bearing-account.iban map once; each pocket
+      # reads it back. `where: { iban: { present: true } }` picks the first
+      # account element that actually carries an iban.
+      - select: { from: raw, path: bank_details, default: [] }
+        as: bank_details
+      - index_by:
+          from: bank_details
+          key: currency
+          value: { path: details.accounts, where: { iban: { present: true } }, pick: iban }
+        as: iban_by_currency
+      - select: { from: raw, path: pocket_transactions, default: {} }
+        as: pocket_transactions
+
+      # --- pockets → checking accounts (+ their transactions) -------------
+      - select: { from: raw, path: pockets, default: [] }
+        as: pockets
+      - for_each: { source: pockets }
+        as_item: pocket
+        as: pocket_results
+        do:
+          - select: { from: pocket, path: id }
+            as: pocket_id
+          - skip_when: { pocket_id: { absent: true } }
+          - apply: join
+            args: { parts: ["pocket:", "{pocket_id}"] }
+            as: source_id
+          - let: currency
+            coalesce: ["{pocket.currency}", "EUR"]
+          - apply: join
+            args: { parts: ["Revolut ", "{currency}"] }
+            as: default_name
+          - let: name
+            coalesce: ["{pocket.name}", "{default_name}"]
+          - apply: cents
+            args: { amount: "{pocket.balance}", already_minor: true }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          # Parent IBAN stays in metadata only — surfacing it on Account#iban
+          # collides canonical ids across a currency's pockets. source_id
+          # drives the id. metadata is compacted (a nil type / iban drops).
+          - lookup: { from: iban_by_currency, key: "{currency}" }
+            as: parent_iban
+          - apply: compact
+            args:
+              hash:
+                revolut_pocket_id: "{pocket_id}"
+                revolut_type: "{pocket.type}"
+                revolut_parent_iban: "{parent_iban}"
+                balance_source: "revolut_live:wallet"
+            as: account_metadata
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{source_id}"
+              currency: "{currency}"
+              name: "{name}"
+              type: checking
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata: "{account_metadata}"
+            as: account
+          - lookup: { from: pocket_transactions, key: "{pocket_id}", default: [] }
+            as: raw_txns
+          - for_each: { source: raw_txns }
+            as_item: tx
+            as: txns
+            do:
+              # source_id MUST be per-leg: internal transfers arrive as one
+              # envelope with multiple legs sharing `id` but distinct
+              # `legId`. Keying on id collapses both legs to one canonical
+              # id; downstream upsert-on-id then drops a leg. Prefer legId.
+              - select: { from: tx, path: [legId, id] }
+                as: tx_id
+              - skip_when: { tx_id: { absent: true } }
+              - select: { from: tx, path: [amount, legs.0.amount] }
+                as: amount_raw
+              - apply: cents
+                args: { amount: "{amount_raw}", already_minor: true }
+                as: amount_cents
+              - skip_when: { amount_cents: { absent: true } }
+              - skip_when: { amount_cents: { eq: 0 } }
+              - apply: cents_to_amount
+                args: { cents: "{amount_cents}" }
+                as: amount
+              - apply: pick
+                args: { key: tx_date, source: "{tx}", aliases: "{config.field_aliases}" }
+                as: tx_date_raw
+              - apply: parse_date
+                args: { value: "{tx_date_raw}" }
+                as: date
+              - skip_when: { date: { absent: true } }
+              - let: tx_currency
+                coalesce: ["{tx.currency}", "{currency}", "EUR"]
+              - apply: join
+                args: { parts: ["{tx.description}"] }
+                as: raw_description
+              - select: { from: tx, path: [description, merchant.name, type] }
+                as: cleaned_raw
+              - apply: strip
+                args: { value: "{cleaned_raw}" }
+                as: description
+              - apply: map_status
+                args: { value: "{tx.state}", mapping: "{config.status_map}" }
+                as: status
+              # merchant: build {name, normalized} only when a non-blank
+              # merchant name is present (first_present strips-and-blanks the
+              # gate; the value keeps the original, unstripped name).
+              - select: { from: tx, path: merchant.name }
+                as: merchant_name
+              - apply: first_present
+                args: { candidates: ["{merchant_name}"] }
+                as: merchant_name_ok
+              - let: merchant
+                value: { name: "{merchant_name}", normalized: true }
+                when: { merchant_name_ok: { present: true } }
+              - apply: build_transaction
+                args:
+                  account_id: "{account.id}"
+                  source_id: "{tx_id}"
+                  amount: "{amount}"
+                  currency: "{tx_currency}"
+                  date: "{date}"
+                  description: "{description}"
+                  raw_description: "{raw_description}"
+                  status: "{status}"
+                  merchant: "{merchant}"
+                  metadata: { revolut: "{tx}" }
+                as: txn
+              - yield: "{txn}"
+          - yield: { account: "{account}", txns: "{txns}" }
+
+      # --- vaults → savings accounts --------------------------------------
+      - select: { from: raw, path: vaults, default: [] }
+        as: vaults
+      - for_each: { source: vaults }
+        as_item: vault
+        as: vault_accounts
+        do:
+          - select: { from: vault, path: id }
+            as: vault_id
+          - skip_when: { vault_id: { absent: true } }
+          - apply: join
+            args: { parts: ["vault:", "{vault_id}"] }
+            as: source_id
+          - let: currency
+            coalesce: ["{vault.currency}", "EUR"]
+          - let: name
+            coalesce: ["{vault.name}", "Revolut Vault"]
+          - apply: pick
+            args: { key: vault_balance, source: "{vault}", aliases: "{config.field_aliases}" }
+            as: vault_balance_raw
+          - apply: cents
+            args: { amount: "{vault_balance_raw}", already_minor: true }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{source_id}"
+              currency: "{currency}"
+              name: "{name}"
+              type: savings
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata:
+                revolut_vault_id: "{vault_id}"
+                revolut_goal: "{vault.goal}"
+                balance_source: "revolut_live:vault"
+            as: account
+          - yield: "{account}"
+
+      # --- assemble (pockets first, then vaults; txns in pocket order) ----
+      - apply: pluck
+        args: { list: "{pocket_results}", key: account }
+        as: pocket_accounts
+      - apply: pluck
+        args: { list: "{pocket_results}", key: txns }
+        as: txn_groups
+      - apply: flatten
+        args: { list: "{txn_groups}" }
+        as: transactions
+      - concat: [pocket_accounts, vault_accounts]
+        as: accounts
+    output:
+      accounts: "{accounts}"
+      transactions: "{transactions}"

@@ -1,0 +1,24 @@
+{
+  "wallet": { "id": "w1" },
+  "bank_details": [
+    { "currency": "EUR", "details": { "accounts": [{ "iban": "LT00 1234 5678 9012 3456" }] } }
+  ],
+  "cards": [],
+  "pockets": [
+    { "id": "p-main",  "currency": "EUR", "balance": 22437, "name": "Revolut EUR",   "type": "CURRENT" },
+    { "id": "p-saved", "currency": "EUR", "balance": 0,     "name": "Experimento 1", "type": "CURRENT" }
+  ],
+  "vaults": [
+    { "id": "vault-1", "name": "Holiday Fund", "currency": "EUR",
+      "balance": { "amount": 350.0, "currency": "EUR" }, "goal": 1000.0 }
+  ],
+  "pocket_transactions": {
+    "p-main": [
+      { "id": "tr-1", "legId": "tr-1-debit",  "amount": -1234,  "startedDate": 1710504000000, "currency": "EUR", "description": "Coffee",        "type": "CARD_PAYMENT", "state": "COMPLETED" },
+      { "id": "tr-2", "legId": "tr-2-credit", "amount": 50000,  "startedDate": 1710417600000, "currency": "EUR", "description": "Bank Transfer", "type": "TRANSFER",     "state": "COMPLETED" }
+    ],
+    "p-saved": [
+      { "id": "tr-3", "legId": "tr-3-debit",  "amount": -100,   "startedDate": 1710504000000, "currency": "EUR", "description": "Vault top-up",  "type": "TRANSFER",     "state": "COMPLETED" }
+    ]
+  }
+}
