@@ -1,0 +1,15 @@
+{
+  "cuentas": [],
+  "tarjetas": [],
+  "prestamos": [
+    {
+      "ppp": "001",
+      "descripcion": "PR. LIBRES",
+      "alias": "hipoteca fuentelucha",
+      "saldo": { "cantidad": 320367.53, "moneda": "EUR" },
+      "indPrestamoHipotecario": "S"
+    }
+  ],
+  "cuenta_movements": {},
+  "tarjeta_movements": {}
+}

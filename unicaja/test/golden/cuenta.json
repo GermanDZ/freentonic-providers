@@ -1,0 +1,114 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 2,
+      "liabilities": 0,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "2319.46"
+    },
+    "balances_by_currency": {
+      "EUR": "1520.37"
+    },
+    "date_range": {
+      "earliest": "2026-06-28",
+      "latest": "2026-07-01"
+    }
+  },
+  "meta": {
+    "scraper_version": "unicaja/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_de6e60a211511f14",
+      "source_id": "cuenta:004",
+      "portable_id": "bank:2103:9999",
+      "institution": "unicaja",
+      "name": "Principal",
+      "type": "checking",
+      "currency": "EUR",
+      "iban": "ES1421037843380030279999",
+      "balance": {
+        "current": "1520.37",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "unicaja_ppp": "004",
+        "unicaja_kind": "cuenta",
+        "balance_source": "unicaja_live:listacuentas"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_0fe81c3279b3dd7d",
+      "source_id": "000000404",
+      "account_id": "acc_de6e60a211511f14",
+      "date": "2026-07-01",
+      "value_date": null,
+      "amount": "-180.54",
+      "currency": "EUR",
+      "description": "C.P SONRIS NOVEDADES",
+      "raw_description": "C.P SONRIS NOVEDADES",
+      "status": null,
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "unicaja_movement": {
+          "fechaOperacion": "2026-07-01",
+          "concepto": "C.P SONRIS NOVEDADES",
+          "numMovimiento": "000000404",
+          "importeMovimiento": {
+            "cantidad": -180.54,
+            "moneda": "EUR"
+          },
+          "saldo": {
+            "cantidad": 1520.37,
+            "moneda": "EUR"
+          },
+          "categoria": "ID44",
+          "indAplazable": "N"
+        },
+        "ppp": "004"
+      }
+    },
+    {
+      "id": "txn_4dc918171298078a",
+      "source_id": "000000398",
+      "account_id": "acc_de6e60a211511f14",
+      "date": "2026-06-28",
+      "value_date": null,
+      "amount": "2500.0",
+      "currency": "EUR",
+      "description": "NOMINA JULIO",
+      "raw_description": "NOMINA JULIO",
+      "status": null,
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "unicaja_movement": {
+          "fechaOperacion": "2026-06-28",
+          "concepto": "NOMINA JULIO",
+          "numMovimiento": "000000398",
+          "importeMovimiento": {
+            "cantidad": 2500.0,
+            "moneda": "EUR"
+          },
+          "saldo": {
+            "cantidad": 1700.91,
+            "moneda": "EUR"
+          },
+          "categoria": "ID10",
+          "indAplazable": "N"
+        },
+        "ppp": "004"
+      }
+    }
+  ],
+  "liabilities": [],
+  "investments": []
+}

@@ -1,0 +1,92 @@
+{
+  "schema_version": "0.1",
+  "summary": {
+    "counts": {
+      "accounts": 1,
+      "transactions": 1,
+      "liabilities": 1,
+      "investments": 0
+    },
+    "amounts_by_currency": {
+      "EUR": "-45.2"
+    },
+    "balances_by_currency": {
+      "EUR": "-800.0"
+    },
+    "date_range": {
+      "earliest": "2026-06-30",
+      "latest": "2026-06-30"
+    }
+  },
+  "meta": {
+    "scraper_version": "unicaja/0.2"
+  },
+  "accounts": [
+    {
+      "id": "acc_de6e60a211511f14",
+      "source_id": "tarjeta:001",
+      "portable_id": "card:2103:9999",
+      "institution": "unicaja",
+      "name": "MASTERCARD CLASSIC",
+      "type": "credit_card",
+      "currency": "EUR",
+      "iban": null,
+      "balance": {
+        "current": "-800.0",
+        "available": null,
+        "timestamp": null
+      },
+      "metadata": {
+        "unicaja_ppp": "001",
+        "unicaja_kind": "tarjeta",
+        "unicaja_codtipotarjeta": "2",
+        "balance_source": "unicaja_live:listatarjetas"
+      }
+    }
+  ],
+  "transactions": [
+    {
+      "id": "txn_d7f96dc98ff27b19",
+      "source_id": "C001",
+      "account_id": "acc_de6e60a211511f14",
+      "date": "2026-06-30",
+      "value_date": null,
+      "amount": "-45.2",
+      "currency": "EUR",
+      "description": "COMPRA AMAZON",
+      "raw_description": "COMPRA AMAZON",
+      "status": null,
+      "merchant": null,
+      "category": null,
+      "metadata": {
+        "unicaja_movement": {
+          "fechaOperacion": "2026-06-30",
+          "concepto": "COMPRA AMAZON",
+          "numMovimiento": "C001",
+          "importeMovimiento": {
+            "cantidad": -45.2,
+            "moneda": "EUR"
+          },
+          "categoria": "ID20"
+        },
+        "ppp": "001"
+      }
+    }
+  ],
+  "liabilities": [
+    {
+      "id": "liab_b51c72da0a5042a5",
+      "source_id": "tarjeta:001",
+      "type": "credit_card",
+      "account_id": "acc_de6e60a211511f14",
+      "balance": "800.0",
+      "limit": "3000.0",
+      "currency": "EUR",
+      "due_date": null,
+      "metadata": {
+        "unicaja_codtipotarjeta": "2"
+      }
+    }
+  ],
+  "investments": []
+}
