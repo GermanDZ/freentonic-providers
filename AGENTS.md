@@ -39,8 +39,9 @@ freentonic is started with `FREENTONIC_ALLOW_PROVIDER_RUBY=1`, and
 production servers run declarative-only. A new provider must not depend on
 it: if a plan can't express what you need, that is a framework gap — see
 "Proposing new framework capabilities". (Fintonic's `normalizer.rb` is the
-one remaining legacy file, pending a port.) There is no registry, no
-gemspec change, no central wiring to edit.
+one remaining Ruby file: Fintonic is a legacy provider kept only for
+importing historical data. Don't copy it, and don't port it unless asked.)
+There is no registry, no gemspec change, no central wiring to edit.
 
 ## Before you start — questions to ask the user
 
@@ -504,6 +505,8 @@ Pick the status honestly:
 - `v1` — green tests + successful end-to-end run against a real account
 - `experimental` — green tests, no live validation yet
 - `deprecated` — still works but a better alternative exists
+- `legacy` — kept only for importing historical data, not for syncing
+  (e.g. Fintonic)
 
 ## Debugging
 
