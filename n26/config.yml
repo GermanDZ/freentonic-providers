@@ -1,0 +1,43 @@
+# Per-provider declarative config for N26.
+#
+# Loaded by Freentonic::Providers::NormalizerBase#provider!(__dir__).
+# Top-level keys become UPCASE class constants on the normalizer
+# (so `institution: n26` becomes `INSTITUTION = "n26"`).
+
+institution: n26
+scraper_version: n26/0.1
+
+# N26 timeline timestamps are absolute instants (epoch ms), so the calendar
+# day depends on the zone we bucket them into. Book by the Madrid calendar
+# day, like the other Spain-based providers, so a near-midnight purchase lands
+# on the day the user saw it in the app. Needs the tzinfo gem (see Gemfile).
+input_timezone: Europe/Madrid
+output_timezone: Europe/Madrid
+
+# The timeline carries no explicit status field. A struck-through amount is
+# how the app renders a reversed/cancelled payment; everything else is a
+# booked transaction. The raw amountStyle is kept in metadata so the mapping
+# can be refined once a pending/declined example shows up in a live capture.
+status_map:
+  NONE:          posted
+  STRIKETHROUGH: reverted
+
+# Allowlist of raw timeline fields preserved into transaction.metadata.
+raw_fields_transaction:
+  externalId:          externalId
+  title:               title
+  amount:              amount
+  currency:            currency
+  amountStyle:         amountStyle
+  category:            category
+  timestamp:           timestamp
+  spaceId:             spaceId
+  customReferenceText: customReferenceText
+  # Display context the app shows under the title (e.g. a transfer note or
+  # a pending marker) and the payment status icon, kept so a status the
+  # status_map doesn't model yet stays visible in the data.
+  tintedSubtitle:      tintedSubtitle
+  statusIcon:          icon.statusIcon
+  # Foreign-currency payments: the amount in the original currency.
+  originalTransaction: originalTransaction
+  secondaryAmount:     secondaryAmount

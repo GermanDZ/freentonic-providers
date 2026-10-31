@@ -1,0 +1,463 @@
+version: 1
+
+# N26 web banking (app.n26.com). EXPERIMENTAL.
+#
+# N26's web app talks to a GraphQL endpoint (POST /graphql?op=<name>) whose
+# request variables are encrypted in the browser, so the API can't be called
+# from outside the page. Instead the workflow drives the app to the screens
+# that load balances and transactions and captures the GraphQL *responses*
+# the app receives (capture_response_json). The `captured:` block below hands
+# those to the extract plan as {captured.*}, which reshapes them for the
+# normalize plan — no provider Ruby.
+#
+# Session model (measured): a session survives the browser closing between
+# syncs (8 back-to-back syncs on one session); how long it lasts unattended,
+# e.g. overnight, isn't measured yet. A full login ALWAYS needs an approval
+# in the N26 app, even on a known device — it surfaces as an
+# await_external_approval prompt. A still-valid session skips straight to
+# the capture.
+#
+# History: the primary Space's timeline — the first page plus as many
+# "Load more" pages as the sync's lookback needs (click_while_present with
+# stop_when_older_than_lookback + capture_response_json all: true); the
+# extract plan drops postings before the lookback start. Every sync has a
+# lookback (simplefreen sends one; the CLI falls back to
+# default_lookback_days), so even a first sync reads a bounded window —
+# raise the lookback to backfill further. Other Spaces contribute balances
+# only.
+#
+# Time zones: N26 timestamps are absolute instants, booked by the Madrid
+# calendar day (config.yml), while the lookback window starts at local
+# midnight of wherever freentonic runs. Paging and the plan's filter both
+# reach one day further back than the window start, so a posting near
+# midnight is never cut by a zone mismatch; the extra day overlaps the
+# previous sync and is deduplicated downstream by transaction id.
+#
+# Hydration: every app.n26.com page is server-rendered first and becomes the
+# interactive app a few seconds later. A click in that window does nothing
+# (login button) or is handled as a plain link — a full, server-rendered
+# page load that makes NO GraphQL call to capture. So every click below is
+# preceded by letting the page settle after a full page load.
+
+config:
+  key: n26
+  default_lookback_days: 30
+
+secrets:
+  USER_EMAIL:
+    prompt: "N26 login email"
+  USER_PASSWORD:
+    prompt: "N26 password"
+
+pipeline:
+  - connect
+  - login
+  - approve_2fa
+  - capture_credentials
+
+phases:
+  connect:
+    # /feed redirects to /login when the session has lapsed and stays put
+    # when it is still valid. Wait for whichever screen shows up.
+    - action: navigate
+      url: "https://app.n26.com/feed"
+    - action: wait_for_first_of
+      selectors: ["#email", "#app-header-logo"]
+      timeout: 30
+    # Let the server-rendered page become the app before the login phase
+    # touches the form (see Hydration above).
+    - action: wait_network_idle
+      seconds: 8
+
+  login:
+    # No-ops when the session is still valid (the form isn't there).
+    - action: fill_if_present
+      selector: "#email"
+      value: "secret(USER_EMAIL)"
+    - action: fill_if_present
+      selector: "#password"
+      value: "secret(USER_PASSWORD)"
+    # Submit, and submit once more only if the button is still there: a
+    # click that doesn't register leaves the form up and no approval is ever
+    # requested. After a real submit N26 swaps the form for its "Confirm
+    # your login" screen, so the retry can't send a second approval request.
+    # Still there after two submits (e.g. a rejected password) fails the
+    # run here rather than waiting out the approval timeout — and never
+    # tries the password a third time.
+    - action: click_while_present
+      selector: "button[data-testid='login-button']"
+      max_clicks: 2
+      settle_seconds: 4
+
+  approve_2fa:
+    # After the password N26 always asks for an approval in the N26 app; the
+    # browser lands on /feed once it is approved. The push notification can
+    # be silenced (e.g. Do Not Disturb), hence the hint in the message.
+    # Returns immediately when the session was still valid (already on /feed).
+    - action: await_external_approval
+      message: "Approve the login in the N26 app on your phone — if no notification arrives (e.g. Do Not Disturb), open the app to find it. This continues automatically once approved."
+      url_includes: "app.n26.com/feed"
+      timeout: 300
+    # Land on /feed with a full page load either way (after a login N26 may
+    # arrive there by a full load too), then let it become the app before
+    # any click — otherwise the Spaces click below is a plain full-page
+    # navigation and no spacesForOverview response is ever fetched.
+    - action: navigate
+      url: "https://app.n26.com/feed"
+    - action: wait_for_selector
+      selector: "#app-header-logo"
+      timeout: 30
+    - action: wait_network_idle
+      seconds: 8
+
+  capture_credentials:
+    # In-app (client-side) navigation is what makes the app call GraphQL; a
+    # full page load is server-rendered and calls nothing. So these are
+    # clicks on stable links, not navigates, on a settled page.
+    #
+    # Spaces overview → balances, names and IBANs of every Space.
+    - action: wait_for_selector
+      selector: "a[href='/spaces']"
+    - action: click
+      selector: "a[href='/spaces']"
+    - action: wait_network_idle
+      seconds: 3
+    - action: capture_response_json
+      url_includes: "op=spacesForOverview"
+      field: data
+      as: spaces_overview
+      required: false
+      retries: 5
+      interval_seconds: 1
+    # Not there: the click landed before the page was interactive and acted
+    # as a full page load. Start again from a settled /feed, once.
+    - action: navigate
+      url: "https://app.n26.com/feed"
+      when_context: { spaces_overview: { absent: true } }
+    - action: wait_for_selector
+      selector: "#app-header-logo"
+      timeout: 30
+      when_context: { spaces_overview: { absent: true } }
+    - action: wait_network_idle
+      seconds: 8
+      when_context: { spaces_overview: { absent: true } }
+    - action: click
+      selector: "a[href='/spaces']"
+      when_context: { spaces_overview: { absent: true } }
+    - action: wait_network_idle
+      seconds: 3
+      when_context: { spaces_overview: { absent: true } }
+    - action: capture_response_json
+      url_includes: "op=spacesForOverview"
+      field: data
+      as: spaces_overview
+      retries: 10
+      interval_seconds: 1
+      when_context: { spaces_overview: { absent: true } }
+    # First Space detail link (the overview lists the primary first) →
+    # getSpaceTransactions is the primary Space's first timeline page, and
+    # getSpace names the Space that was opened — the plan checks it is the
+    # primary, since the "Load more" pages below follow the opened Space.
+    - action: wait_for_selector
+      selector: "a[href^='/spaces/details/']"
+    - action: click
+      selector: "a[href^='/spaces/details/']"
+    - action: wait_network_idle
+      seconds: 3
+    - action: capture_response_json
+      url_includes: "op=getSpaceTransactions"
+      field: data
+      as: space_timeline
+      retries: 10
+      interval_seconds: 1
+    # url_includes is a substring match: getSpaceFeatures and
+    # getSpaceTransactions share the "op=getSpace" prefix. Transactions is
+    # excluded; getSpaceFeatures (from the overview click) is older than
+    # getSpace, and matches are tried newest first. Should it ever win
+    # anyway, it has no spaceDetails.id and the plan aborts.
+    - action: capture_response_json
+      url_includes: "op=getSpace"
+      exclude_url: "op=getSpaceTransactions"
+      field: data
+      as: space_detail
+      retries: 10
+      interval_seconds: 1
+    # Older history: each "Load more" click fetches one getSpaceTimeline page
+    # (~20 postings) and the button disappears after the last page. Must run
+    # AFTER the getSpace capture above: "op=getSpace" also matches
+    # getSpaceTimeline. Pages are newest first, so paging stops once the
+    # loaded postings reach back past the sync's lookback (often after zero
+    # clicks — the first page covers a short window). Every click must fetch
+    # a page; one that doesn't fails the run instead of looking complete.
+    # max_clicks bounds one sync (~2 s per page; 100 pages ≈ 2,000
+    # postings): a lookback that needs more fails rather than truncating.
+    - action: click_while_present
+      selector: "button[data-testid='feed-load-more-timeline-items']"
+      max_clicks: 100
+      settle_seconds: 2
+      wait_for_response:
+        url_includes: ["op=getSpaceTimeline"]
+      stop_when_older_than_lookback:
+        url_includes: ["op=getSpaceTransactions", "op=getSpaceTimeline"]
+        items_paths: ["data.timeline.modules.*.timelineItems", "data.timeline.timelineItems"]
+        items_where: { type: TRANSACTION }
+        margin_hours: 24
+    # Every page the clicks loaded (none when the first page was enough).
+    - action: capture_response_json
+      url_includes: "op=getSpaceTimeline"
+      field: data
+      as: space_timeline_pages
+      all: true
+      required: false
+
+# The captured GraphQL responses the extract plan reads as {captured.*}.
+# Data only — nothing here is a cookie or token.
+captured:
+  - { from: spaces_overview, required: true }
+  - { from: space_timeline, required: true }
+  - { from: space_detail, required: true }
+  - { from: space_timeline_pages }
+
+# No network calls: reshape the captured responses into
+#   { spaces: [<overview item>], space_transactions: { <space id>: [<TRANSACTION item>] } }
+extract:
+  plan:
+    steps:
+      - select: { from: captured, path: spaces_overview.spaces.overview.items }
+        as: spaces
+      - select: { from: spaces, path: "0" }
+        as: first_space
+      - abort: "N26: no Spaces in the captured overview — was login completed?"
+        when: { first_space: { absent: true } }
+
+      # The timeline belongs to the Space whose detail page was opened; the
+      # workflow opens the first one, which the overview lists as primary.
+      # Check rather than trust it: pages attributed to the wrong account
+      # would be worse than a failed sync.
+      - select: { from: captured, path: space_detail.spaceDetails.id }
+        as: timeline_space_id
+      - abort: "N26: the captured getSpace response names no Space, so whose timeline was loaded is unknown"
+        when: { timeline_space_id: { absent: true } }
+      - index_by: { from: spaces, key: id, value: isPrimary }
+        as: primary_by_space
+      - lookup: { from: primary_by_space, key: "{timeline_space_id}" }
+        as: timeline_is_primary
+      - abort: "N26: the Space opened for its timeline isn't the primary one — has the Spaces page order changed?"
+        when: { timeline_is_primary: { neq: true } }
+
+      # First page (getSpaceTransactions, every module) + every "Load more"
+      # page (getSpaceTimeline), newest first as loaded.
+      - select: { from: captured, path: space_timeline.timeline.modules, default: [] }
+        as: first_page_modules
+      - for_each: { source: first_page_modules }
+        as_item: feed_module
+        as: first_page_item_lists
+        do:
+          - select: { from: feed_module, path: timelineItems, default: [] }
+            as: module_items
+          - yield: "{module_items}"
+      - select: { from: captured, path: space_timeline_pages, default: [] }
+        as: timeline_pages
+      - for_each: { source: timeline_pages }
+        as_item: page
+        as: page_item_lists
+        do:
+          - select: { from: page, path: timeline.timelineItems, default: [] }
+            as: page_items
+          - yield: "{page_items}"
+      - concat: [first_page_item_lists, page_item_lists]
+        as: item_lists
+      - apply: flatten
+        args: { list: "{item_lists}" }
+        as: timeline_items
+
+      # The lookback floor: one day before the window start, matching the
+      # paging stop's margin_hours (see Time zones above).
+      - apply: subtract
+        args: { a: "{from_ms}", b: 86400000 }
+        as: window_floor_ms
+      # The timeline interleaves month/day headers with postings.
+      - for_each: { source: timeline_items }
+        as_item: item
+        as: txn_rows
+        do:
+          - select: { from: item, path: type }
+            as: item_type
+          - skip_when: { item_type: { neq: TRANSACTION } }
+          # Honor the sync's lookback like a date-parameterised API would:
+          # drop postings before the floor. The last page loaded straddles
+          # it, so this trims its older part. Gates compare against literals
+          # only, hence the difference vs 0; with no lookback (or no
+          # timestamp) the difference is nil → 0 → kept.
+          - select: { from: item, path: timestamp }
+            as: item_ts
+          - apply: subtract
+            args: { a: "{item_ts}", b: "{window_floor_ms}" }
+            as: ms_after_floor
+          - let: ms_after_floor_or_keep
+            coalesce: ["{ms_after_floor}", 0]
+          - skip_when: { ms_after_floor_or_keep: { lt: 0 } }
+          - yield: "{item}"
+      # Pages shouldn't overlap, but a page boundary that shifts while new
+      # postings arrive could repeat one.
+      - dedup_by: externalId
+        from: txn_rows
+        as: txns
+      - let: timeline_entries
+        value: [{ id: "{timeline_space_id}", txns: "{txns}" }]
+      - index_by: { from: timeline_entries, key: id, value: txns }
+        as: space_transactions
+    output:
+      spaces: "{spaces}"
+      space_transactions: "{space_transactions}"
+
+normalize:
+  plan:
+    steps:
+      - select: { from: raw, path: spaces, default: [] }
+        as: spaces
+      - select: { from: raw, path: space_transactions, default: {} }
+        as: space_transactions
+      # IBAN per Space: the externalIds entry of type IBAN.
+      - index_by:
+          from: spaces
+          key: id
+          value: { path: externalIds, where: { type: IBAN }, pick: value }
+        as: iban_by_space
+
+      - for_each: { source: spaces }
+        as_item: space
+        as: space_results
+        do:
+          - select: { from: space, path: id }
+            as: space_id
+          - skip_when: { space_id: { absent: true } }
+          - apply: join
+            args: { parts: ["space:", "{space_id}"] }
+            as: source_id
+          - let: currency
+            coalesce: ["{space.balance.currency}", "EUR"]
+          - let: name
+            coalesce: ["{space.name}", "N26"]
+          - apply: cents
+            args: { amount: "{space.balance.availableBalance}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - lookup: { from: iban_by_space, key: "{space_id}" }
+            as: raw_space_iban
+          - apply: remove_whitespace
+            args: { value: "{raw_space_iban}" }
+            as: space_iban
+          # Only the primary Space surfaces its IBAN on the account: if
+          # Spaces ever share an IBAN, two accounts with the same IBAN would
+          # collide on their canonical ids. Every Space keeps its IBAN in
+          # metadata either way.
+          - select: { from: space, path: isPrimary }
+            as: is_primary
+          - let: account_iban
+            value: "{space_iban}"
+            when: { is_primary: { eq: true } }
+          - let: account_type
+            value: checking
+            when: { is_primary: { eq: true } }
+          - let: account_type
+            coalesce: ["{account_type}", "savings"]
+          - apply: compact
+            args:
+              hash:
+                n26_space_id: "{space_id}"
+                n26_account_id: "{space.accountId}"
+                n26_account_type: "{space.accountType}"
+                n26_space_type: "{space.type}"
+                n26_iban: "{space_iban}"
+                balance_source: "n26_web:spacesForOverview"
+            as: account_metadata
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{source_id}"
+              currency: "{currency}"
+              name: "{name}"
+              type: "{account_type}"
+              iban: "{account_iban}"
+              balance: { current: "{balance_amount}", timestamp: null }
+              metadata: "{account_metadata}"
+            as: account
+
+          - lookup: { from: space_transactions, key: "{space_id}", default: [] }
+            as: raw_txns
+          - for_each: { source: raw_txns }
+            as_item: tx
+            as: txns
+            do:
+              - select: { from: tx, path: externalId }
+                as: tx_id
+              - skip_when: { tx_id: { absent: true } }
+              - apply: cents
+                args: { amount: "{tx.amount}" }
+                as: amount_cents
+              - skip_when: { amount_cents: { absent: true } }
+              - skip_when: { amount_cents: { eq: 0 } }
+              - apply: cents_to_amount
+                args: { cents: "{amount_cents}" }
+                as: amount
+              - apply: parse_date
+                args:
+                  value: "{tx.timestamp}"
+                  input_timezone: "{config.input_timezone}"
+                  output_timezone: "{config.output_timezone}"
+                as: date
+              - skip_when: { date: { absent: true } }
+              - let: tx_currency
+                coalesce: ["{tx.currency}", "{currency}", "EUR"]
+              - apply: strip
+                args: { value: "{tx.title}" }
+                as: title
+              # A transfer's reference (what the sender wrote) is often the
+              # only thing telling two transfers from the same person apart.
+              - apply: strip
+                args: { value: "{tx.customReferenceText}" }
+                as: reference
+              - apply: join
+                args: { parts: ["{title}", "{reference}"], separator: " — ", drop_empty: true }
+                as: description
+              - let: amount_style
+                coalesce: ["{tx.amountStyle}", "NONE"]
+              - apply: map_status
+                args: { value: "{amount_style}", mapping: "{config.status_map}" }
+                as: status
+              - apply: extract_fields
+                args:
+                  source: "{tx}"
+                  mapping: "{config.raw_fields_transaction}"
+                as: n26_metadata
+              - apply: build_transaction
+                args:
+                  account_id: "{account.id}"
+                  source_id: "{tx_id}"
+                  amount: "{amount}"
+                  currency: "{tx_currency}"
+                  date: "{date}"
+                  description: "{description}"
+                  raw_description: "{title}"
+                  status: "{status}"
+                  category: "{tx.category}"
+                  metadata: { n26: "{n26_metadata}" }
+                as: txn
+              - yield: "{txn}"
+          - yield: { account: "{account}", txns: "{txns}" }
+
+      - apply: pluck
+        args: { list: "{space_results}", key: account }
+        as: accounts
+      - apply: pluck
+        args: { list: "{space_results}", key: txns }
+        as: txn_groups
+      - apply: flatten
+        args: { list: "{txn_groups}" }
+        as: transactions
+    output:
+      accounts: "{accounts}"
+      transactions: "{transactions}"
