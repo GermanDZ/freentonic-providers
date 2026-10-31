@@ -281,6 +281,9 @@ bundle exec rake test  # all providers, not just yours
 | 10 | `wait_url` too broad | 1 time | Use specific path, not just domain |
 | 11 | Button ID shared across pages | 1 time | Use `:has()` scoping: `body:has(#emailInput) #submitButton` |
 | 12 | `click_if_present` fires on wrong page | 1 time | When a button ID exists on multiple pages, use `body:has(#context-element) #button` to scope the click |
+| 13 | A capture finds "no matching response" on a web app (N26) | Intermittent, until fixed | The page was still server-rendered HTML: a click before it hydrates does nothing or reloads the page without an API call. `wait_network_idle` (≈8 s) after every full page load, before any click; reach screens with `click`, not `navigate`. See freentonic's [capturing data from a web app's own responses](https://github.com/GermanDZ/freentonic/blob/main/docs/workflow-action-capture-response-json.md#capturing-data-from-a-web-apps-own-responses) |
+| 14 | `url_includes` matched the wrong response (N26) | 1 time | It's a substring: `op=getSpace` also matches `op=getSpaceTransactions`. Use `exclude_url`, order the captures, and have the plan `abort:` when the id it needs isn't there |
+| 15 | A provider PR needs unreleased freentonic | 1 time | CI pins a freentonic **release tag**. Release freentonic first, then bump the pin — see [AGENTS.md](../AGENTS.md#after-you-hand-the-drafts-over) |
 
 ---
 
@@ -297,6 +300,29 @@ bundle exec rake test  # all providers, not just yours
 9. **Handle ALL login states from day one** — fresh, remembered-email, and active-session. Use `wait_for_first_of` with selectors for each state, then `_if_present` for every action
 
 ---
+
+## Reference: N26 Provider Final State
+
+N26's web app encrypts its API requests in the page, so nothing can be
+called from outside it. The provider is the reference for a **capture-only**
+provider:
+
+- `n26/workflow.yml` — drives the app with in-app clicks after a hydration
+  settle, captures the app's own GraphQL responses (`capture_response_json`),
+  pages "Load more" history with `click_while_present` (`wait_for_response`
+  + `stop_when_older_than_lookback`), and hands the responses to the plan
+  through a top-level `captured:` block — no `credentials:` block. Extract
+  and normalize are both plans; the extract plan checks it read the right
+  Space and aborts otherwise.
+- `n26/test/` — synthetic captures run through the real Extract stage
+  (`n26_harness.rb`), so the `captured:` declaration and its `required:`
+  checks are tested too; lookback tests are built around the local window
+  start so they pass in any time zone.
+
+Key lessons: let every page hydrate before clicking; every full login needs
+an approval in the bank's app (a silenced notification looks like a hang);
+filter the plan on `{from_ms}` as well as stopping the paging, because the
+last page straddles the window start.
 
 ## Reference: Revolut Provider Final State
 
