@@ -8,30 +8,41 @@ backends this doc assumes you've seen.
 
 ## TL;DR
 
-A provider is a directory containing four things:
+A provider is a directory with no Ruby in it outside its tests:
 
 ```
 my_bank/
-├── workflow.yml      # declarative login + API client config
-├── extractor.rb      # hits the API with captured credentials → raw payload
-├── normalizer.rb     # raw payload → universal account/movement shape
+├── workflow.yml      # login + capture phases, api_client, and two plans:
+│                     #   extract: plan:   captured session → raw payload
+│                     #   normalize: plan: raw payload → canonical payload
+├── config.yml        # constants the normalize plan reads as {config.*}
 └── test/
     ├── my_bank_extract_credentials_test.rb
+    ├── my_bank_extract_plan_test.rb
     └── my_bank_normalizer_test.rb
 ```
 
-The framework's `Stages::Extract` and `Stages::Normalize` load
-`extractor.rb` and `normalizer.rb` from relative paths declared in
-`workflow.yml`. That's the only wiring you need — there is no central
-registry, no gemspec change, no boilerplate.
+Both plans are interpreted by the framework
+([`extract-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/extract-plan.md),
+[`normalize-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/normalize-plan.md)). That's the only wiring
+you need — there is no central registry, no gemspec change, no
+boilerplate.
+
+> **Why no Ruby?** freentonic ≥ 0.18.0 refuses provider Ruby
+> (`extract: ruby:`, `normalize: ruby:`, `api_client.ext`) at run start
+> unless it's started with `FREENTONIC_ALLOW_PROVIDER_RUBY=1`, and
+> production servers run without it — so no provider-authored code runs
+> during a sync. If a plan can't express something, that's a framework
+> gap to raise upstream (see `AGENTS.md`), not a reason for an
+> `extractor.rb`.
 
 ## 1. Scaffold the directory
 
 ```sh
+rake new[my_bank]   # or by hand:
 mkdir -p my_bank/test
-touch my_bank/{workflow.yml,extractor.rb,normalizer.rb}
-touch my_bank/test/my_bank_normalizer_test.rb
-touch my_bank/test/my_bank_extract_credentials_test.rb
+touch my_bank/{workflow.yml,config.yml}
+touch my_bank/test/my_bank_{extract_credentials,extract_plan,normalizer}_test.rb
 ```
 
 Use snake_case for the directory name — it becomes the `config.key` in
@@ -142,14 +153,14 @@ api_client:
       pagination: offset
       limit: 100
 
-# Point at the sibling Ruby files. Paths are relative to THIS YAML file.
-extract:
-  ruby: ./extractor.rb
-  class: Freentonic::Providers::MyBank::Extractor
+# extract: plan: and normalize: plan: — see sections 3 and 4.
+```
 
-normalize:
-  ruby: ./normalizer.rb
-  class: Freentonic::Providers::MyBank::Normalizer
+Lint after every change — schema, plan verbs, `{token}` references and
+endpoint names are all checked without a browser or network:
+
+```sh
+freentonic --lint --workflow my_bank/workflow.yml
 ```
 
 ### YAML authoring tips
@@ -178,9 +189,9 @@ normalize:
   always fetch page 0. Use `{page_offset}` instead.
 - **`batch_keys` unwraps responses.** If you set
   `batch_keys: [resultList]`, parameterized endpoint methods return the
-  extracted array — NOT the full response hash. If your extractor needs
-  metadata like `result["count"]` alongside the batch, omit `batch_keys`
-  and read the full response.
+  extracted array — NOT the full response hash. If your plan needs
+  metadata like the response's `count` alongside the batch, omit
+  `batch_keys` and read the full response.
 - **Use `_if_present` for multi-state login flows.** Banks remember
   sessions in various ways — email remembered, PIN skipped, straight to
   2FA. Use `wait_for_first_of` to detect which state, then
@@ -190,177 +201,202 @@ normalize:
   `body:has(#emailInput) #loginButton` to only click it when the email
   form is present. Chrome supports `:has()` since v105.
 
-## 3. Write the extractor
+## 3. Write the extract plan
 
-The extractor owns "I have credentials, give me a raw payload from the
-provider API." It's plain Ruby — not a framework subclass — and is
-instantiated by `Stages::Extract` with `.new`, then called with keyword
-args:
+The extract plan owns "I have credentials, give me a raw payload from the
+provider API." It calls the endpoints declared in `api_client:` (and only
+those), loops over products, and assembles the raw payload:
 
-> **Before you write Ruby:** if your extractor is pure orchestration
-> (fetch → loop → assemble, nothing imperative), you can skip this file
-> entirely and declare an `extract: plan:` in the YAML instead. See
-> [writing-extract-plans.md](writing-extract-plans.md) — the example
-> below has a one-to-one plan equivalent. Revolut is authored this way.
-
-```ruby
-# my_bank/extractor.rb
-module Freentonic
-  module Providers
-    module MyBank
-      class Extractor
-        def call(client:, credentials:, from_date:, stdout:, stderr:)
-          stdout.puts "  Fetching accounts..."
-          accounts = client.fetch_accounts
-          stdout.puts "    → #{accounts.size} accounts"
-
-          accounts.each do |account|
-            id = account["id"]
-            stdout.puts "  Fetching movements for #{account['name']}..."
-            begin
-              account["movements"] = client.fetch_movements(
-                account_id: id,
-                from_date:  from_date
-              )
-              stdout.puts "    → #{account['movements'].size} movements"
-            rescue StandardError => error
-              stderr.puts "    ✗ #{error.class}: #{error.message}"
-              account["movements"] = []
-            end
-          end
-
-          accounts
-        end
-      end
-    end
-  end
-end
+```yaml
+# Captured session → raw payload:
+#   { accounts: [<account>], movements: { <account id>: [<movement>] } }
+extract:
+  plan:
+    steps:
+      # The product list is essential: no on_error/safe, so a dead
+      # session fails the run as "re-run connect", not as 0 accounts.
+      - fetch: fetch_accounts
+        as: accounts
+      - for_each:
+          source: accounts
+        as_item: account
+        as: movements
+        collect: map
+        key: "{account.id}"
+        do:
+          # One failing account mustn't sink the run: safe: logs it to
+          # stderr and binds default: instead.
+          - fetch: fetch_movements
+            args: { account_id: "{account.id}", from_date: "{from_date}" }
+            as: rows
+            safe: true
+            default: []
+          - yield: "{rows}"
+    output:
+      accounts: "{accounts}"
+      movements: "{movements}"
 ```
 
-Return anything serializable to JSON — the framework will persist it
-verbatim when you use `--dump-raw`.
+The plan's output is what `--dump-raw` persists and what the normalize
+plan reads as `raw`. Keep it close to the API's own rows — reshape only as
+much as normalization needs.
 
-**Error handling philosophy:** catch errors at the boundary of a single
-product (so a failing card doesn't sink the whole run) but let
-authentication errors bubble up — the user needs to log in again.
+**Error handling:** isolate a single product's failure (`safe: true`, or
+`on_error: { warn: … }`) so a failing card doesn't sink the run, but fail
+loudly when the run can't do without something — `on_error: { abort: … }`
+on the product list, `abort:` when an essential value is absent. An
+expired session must surface as "re-run connect", never as an
+empty-but-successful sync.
 
-## 4. Write the normalizer
+**Pagination** belongs on the endpoint (`pagination:` — offset, as above,
+or `kind: cursor` as in `revolut/workflow.yml`), so the plan sees one
+flattened list. Bound it by the lookback: pass `{from_date}` to the
+endpoint, or stop a cursor with `continue_when` on `{from_ms}`.
 
-The normalizer takes the extractor's raw output and emits a universal
-shape that HTTP receivers can consume. Subclass
-`Freentonic::Normalizers::Base` and implement `#call(raw, context:)`:
+**No usable API?** When the app's requests can't be replayed (N26
+encrypts them in the page), there's no `api_client:`: capture the app's
+own responses with `capture_response_json` and hand them to the plan in a
+top-level `captured:` block instead of `credentials:`. See `n26/` and
+freentonic's [capturing data from a web app's own responses](https://github.com/GermanDZ/freentonic/blob/main/docs/workflow-action-capture-response-json.md#capturing-data-from-a-web-apps-own-responses).
 
-```ruby
-# my_bank/normalizer.rb
-require "date"
+More patterns (first-present fallbacks, joins with `index_by:` /
+`lookup:`, `when:` gates, `dedup_by:`) are in
+[writing-extract-plans.md](writing-extract-plans.md) and freentonic's
+[`extract-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/extract-plan.md).
 
-module Freentonic
-  module Providers
-    module MyBank
-      class Normalizer < Freentonic::Normalizers::Base
-        def call(raw, context: {})
-          {
-            "source_tag" => "my_bank_push",
-            "accounts"   => Array(raw).filter_map { |a| build_account(a) }
-          }
-        end
+## 4. Write the normalize plan
 
-        private
+The normalize plan turns the raw payload into freentonic's **canonical
+payload** — accounts and transactions with deterministic ids, defined in
+[`canonical-data-model.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/canonical-data-model.md). The
+`build_account` / `build_transaction` functions construct and validate
+the entities, so the shape can't drift:
 
-        def build_account(a)
-          {
-            "external_id"    => "my_bank:#{a['id']}",
-            "legacy_uids"    => ["my_bank:#{a['id']}"],
-            "iban"           => a["iban"],
-            "kind"           => kind_for(a),
-            "bank_key"       => "my_bank",
-            "name"           => a["name"] || "My Bank #{a['id']}",
-            "currency"       => a["currency"] || "EUR",
-            "balance_cents"  => cents(a["balance"]),
-            "balance_source" => "my_bank:accounts",
-            "metadata"       => { "my_bank_account_id" => a["id"] },
-            "movements"      => Array(a["movements"]).filter_map { |mv| build_movement(a["id"], mv) }
-          }
-        end
+```yaml
+# Raw payload → canonical accounts + transactions.
+normalize:
+  plan:
+    steps:
+      - select: { from: raw, path: accounts, default: [] }
+        as: raw_accounts
+      - select: { from: raw, path: movements, default: {} }
+        as: movements_by_account
+      - for_each: { source: raw_accounts }
+        as_item: acct
+        as: results
+        do:
+          - select: { from: acct, path: id }
+            as: acct_id
+          - skip_when: { acct_id: { absent: true } }
+          - let: currency
+            coalesce: ["{acct.currency}", "EUR"]
+          - apply: cents
+            args: { amount: "{acct.balance}" }
+            as: balance_cents
+          - apply: cents_to_amount
+            args: { cents: "{balance_cents}" }
+            as: balance_amount
+          - apply: remove_whitespace
+            args: { value: "{acct.iban}" }
+            as: iban
+          - select: { from: acct, path: product_type }
+            as: product_type
+          - let: account_type
+            value: credit_card
+            when: { product_type: { eq: credit_card } }
+          - let: account_type
+            coalesce: ["{account_type}", "checking"]
+          - apply: build_account
+            args:
+              institution: "{config.institution}"
+              source_id: "{acct_id}"
+              currency: "{currency}"
+              name: "{acct.name}"
+              type: "{account_type}"
+              iban: "{iban}"
+              balance: { current: "{balance_amount}", timestamp: null }
+            as: account
 
-        def build_movement(account_id, mv)
-          date = parse_date(mv["date"])
-          return nil unless date && mv["amount"]
+          - lookup: { from: movements_by_account, key: "{acct_id}", default: [] }
+            as: rows
+          - for_each: { source: rows }
+            as_item: mv
+            as: txns
+            do:
+              - apply: cents
+                args: { amount: "{mv.amount}" }
+                as: amount_cents
+              - skip_when: { amount_cents: { absent: true } }
+              - apply: cents_to_amount
+                args: { cents: "{amount_cents}" }
+                as: amount
+              - apply: parse_date
+                args:
+                  value: "{mv.date}"
+                  input_timezone: "{config.input_timezone}"
+                  output_timezone: "{config.output_timezone}"
+                as: date
+              - skip_when: { date: { absent: true } }
+              - apply: strip
+                args: { value: "{mv.description}" }
+                as: description
+              - apply: build_transaction
+                args:
+                  account_id: "{account.id}"
+                  source_id: "{mv.id}"
+                  amount: "{amount}"
+                  currency: "{currency}"
+                  date: "{date}"
+                  description: "{description}"
+                  raw_description: "{description}"
+                  status: posted
+                as: txn
+              - yield: "{txn}"
+          - yield: { account: "{account}", txns: "{txns}" }
 
-          {
-            "dedup_key"    => "my_bank:#{account_id}:#{mv['id']}",
-            "date"         => date.strftime("%Y-%m-%d"),
-            "amount_cents" => cents(mv["amount"]),
-            "currency"     => mv["currency"] || "EUR",
-            "description"  => mv["description"].to_s.strip,
-            "raw_payload"  => { "my_bank_movement" => mv }
-          }
-        end
-
-        def kind_for(a)
-          case a["product_type"]
-          when "credit_card" then "liability"
-          when "loan"        then "liability"
-          else                    "asset"
-          end
-        end
-
-        def cents(amount)
-          return nil if amount.nil?
-          (amount.to_f * 100).round
-        end
-
-        def parse_date(str)
-          return nil if str.to_s.empty?
-          Date.parse(str)
-        rescue Date::Error
-          nil
-        end
-      end
-    end
-  end
-end
+      - apply: pluck
+        args: { list: "{results}", key: account }
+        as: accounts
+      - apply: pluck
+        args: { list: "{results}", key: txns }
+        as: txn_groups
+      - apply: flatten
+        args: { list: "{txn_groups}" }
+        as: transactions
+    output:
+      accounts: "{accounts}"
+      transactions: "{transactions}"
 ```
 
-### Universal payload shape
+Its constants live in `config.yml`, read as `{config.*}`:
 
-The output of every normalizer should follow the same broad contract so
-receivers can consume any provider uniformly:
-
-```ruby
-{
-  "source_tag" => "my_bank_push",
-  "accounts" => [
-    {
-      "external_id"    => "my_bank:<id>",    # stable identifier
-      "legacy_uids"    => ["my_bank:<id>"],  # alternate IDs for migration
-      "iban"           => "...",             # or nil
-      "kind"           => "asset" | "liability" | "investment",
-      "bank_key"       => "my_bank",         # short tag per provider
-      "name"           => "Human-readable",
-      "currency"       => "EUR",
-      "balance_cents"  => 123456,            # or nil if unknown
-      "balance_source" => "my_bank:...",     # freeform provenance
-      "metadata"       => { ... },           # anything you want
-      "movements" => [
-        {
-          "dedup_key"    => "my_bank:<account>:<mvid>",
-          "date"         => "YYYY-MM-DD",
-          "amount_cents" => -1234,
-          "currency"     => "EUR",
-          "description"  => "...",
-          "raw_payload"  => { ... }          # keep originals for debugging
-        }
-      ]
-    }
-  ]
-}
+```yaml
+# my_bank/config.yml
+# Constants the normalize plan reads as {config.*}.
+institution: my_bank
+scraper_version: my_bank/0.1
+# The calendar day a movement is booked on, independent of where
+# freentonic runs.
+input_timezone: Europe/Madrid
+output_timezone: Europe/Madrid
 ```
 
-The exact field set that receivers require is ultimately defined by the
-ingest system you export to — but sticking close to this shape means
-your provider plugs into any freentonic-aware receiver without
-per-provider glue.
+- **Amounts:** `apply: cents` accepts major units, minor units
+  (`already_minor: true`), a `{amount, currency}` Hash, or a comma-decimal
+  String, and returns integer cents; `cents_to_amount` turns that into
+  the canonical decimal.
+- **Dates:** give `parse_date` (or `parse_timestamp_ms`) explicit
+  timezones from `config.yml`, so the booking day doesn't depend on where
+  freentonic runs.
+- **Gates take bound names:** `when:` / `skip_when:` compare a name bound
+  by an earlier step against a literal — `select:` a field first, as with
+  `product_type` above.
+- **Statuses and metadata:** `map_status` with a `config.yml` map, and
+  `extract_fields` with a `config.yml` allowlist of raw fields to keep.
+
+Every registered function is listed by `freentonic --schema-json`; the
+full grammar is in freentonic's
+[`normalize-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/normalize-plan.md).
 
 ## 5. Iterate with `--dump-raw` / `--from-raw`
 
@@ -379,7 +415,7 @@ freentonic --workflow my_bank/workflow.yml \
   --from-raw /tmp/my_bank_raw.json \
   --export json --export-path /tmp/my_bank_normalized.json
 
-# Inspect the result and tweak normalizer.rb. Repeat the second command.
+# Inspect the result and tweak the normalize plan. Repeat the second command.
 ```
 
 Use `--dump-normalized` + `--from-normalized` the same way if you want
@@ -387,9 +423,10 @@ to iterate on exporter config without re-running the normalizer.
 
 ## 6. Write tests
 
-Two test files, both minimal. The first validates the credentials
-mapping in `workflow.yml`; the second validates the normalizer against a
-small hand-crafted fixture. Neither touches Chrome or the bank.
+Three small test files, none of which touch Chrome or the bank. The
+first validates the credentials mapping in `workflow.yml`, the second
+runs the extract plan against a fake api_client, the third runs the
+normalize plan on a small hand-crafted raw payload.
 
 ```ruby
 # my_bank/test/my_bank_extract_credentials_test.rb
@@ -407,12 +444,8 @@ class MyBankExtractCredentialsTest < Minitest::Test
   def test_maps_captured_context_to_credentials
     credentials = source.extract_credentials(
       nil,
-      workflow_context: {
-        "cookie"     => "sid=abc",
-        "csrf_token" => "tok-123"
-      },
-      stdout: StringIO.new,
-      stderr: StringIO.new
+      workflow_context: { "cookie" => "sid=abc", "csrf_token" => "tok-123" },
+      stdout: StringIO.new, stderr: StringIO.new
     )
 
     assert_equal({ cookie: "sid=abc", csrf_token: "tok-123" }, credentials)
@@ -420,11 +453,47 @@ class MyBankExtractCredentialsTest < Minitest::Test
 
   def test_raises_when_required_key_missing
     assert_raises(Freentonic::UserError) do
-      source.extract_credentials(
-        nil, workflow_context: {},
-        stdout: StringIO.new, stderr: StringIO.new
-      )
+      source.extract_credentials(nil, workflow_context: {}, stdout: StringIO.new, stderr: StringIO.new)
     end
+  end
+end
+```
+
+```ruby
+# my_bank/test/my_bank_extract_plan_test.rb
+require "minitest/autorun"
+require "stringio"
+require "date"
+require "freentonic"
+
+class MyBankExtractPlanTest < Minitest::Test
+  WORKFLOW = File.expand_path("../workflow.yml", __dir__)
+
+  # Stands in for the generated api_client: one method per endpoint name.
+  class FakeClient
+    def fetch_accounts = [{ "id" => "acc-1", "name" => "Checking" }, { "id" => "acc-2", "name" => "Card" }]
+
+    def fetch_movements(account_id:, from_date:)
+      raise "HTTP 500" if account_id == "acc-2"
+
+      [{ "id" => "mv-1", "date" => "2024-03-15", "amount" => -12.34 }]
+    end
+  end
+
+  def extract
+    schema = Freentonic::WorkflowSchema.load(WORKFLOW)
+    Freentonic::ExtractPlan::PlanExtractor.new(
+      schema.raw.dig("extract", "plan"), endpoint_names: schema.api_client_endpoint_names
+    ).call(client: FakeClient.new, credentials: {}, from_date: Date.new(2024, 1, 1),
+           stdout: StringIO.new, stderr: StringIO.new)
+  end
+
+  def test_fetches_movements_per_account
+    assert_equal 1, extract["movements"].fetch("acc-1").size
+  end
+
+  def test_a_failing_account_does_not_sink_the_run
+    assert_equal [], extract["movements"].fetch("acc-2")
   end
 end
 ```
@@ -432,38 +501,45 @@ end
 ```ruby
 # my_bank/test/my_bank_normalizer_test.rb
 require "minitest/autorun"
+require "bigdecimal"
+require "stringio"
+require "date"
 require "freentonic"
-require_relative "../normalizer"
 
 class MyBankNormalizerTest < Minitest::Test
+  WORKFLOW = File.expand_path("../workflow.yml", __dir__)
+
+  def normalize(raw)
+    Freentonic::Normalizers::Builder.for_workflow(WORKFLOW, stdout: StringIO.new, stderr: StringIO.new).call(raw)
+  end
+
   def test_normalizes_a_basic_account_with_movements
-    raw = [
-      {
-        "id"       => "acc-1",
-        "name"     => "Checking",
-        "iban"     => "ES00 1234 5678 9012 3456 7890",
-        "currency" => "EUR",
-        "balance"  => 1234.56,
-        "product_type" => "current",
-        "movements" => [
-          { "id" => "mv-1", "date" => "2024-03-15", "amount" => -12.34, "description" => "Coffee" }
-        ]
-      }
-    ]
+    payload = normalize(
+      "accounts" => [{ "id" => "acc-1", "name" => "Checking", "iban" => "ES00 1234 5678 9012 3456 7890",
+                       "currency" => "EUR", "balance" => 1234.56, "product_type" => "current" }],
+      "movements" => { "acc-1" => [{ "id" => "mv-1", "date" => "2024-03-15", "amount" => -12.34,
+                                     "description" => " Coffee " }] }
+    )
 
-    payload = Freentonic::Providers::MyBank::Normalizer.new.call(raw)
-    assert_equal "my_bank_push", payload["source_tag"]
+    account = payload.accounts.first
+    assert_equal "checking", account.type
+    assert_equal "ES0012345678901234567890", account.iban
+    assert_equal BigDecimal("1234.56"), account.balance.current
 
-    acct = payload["accounts"].first
-    assert_equal "asset",          acct["kind"]
-    assert_equal 123_456,          acct["balance_cents"]
-
-    mv = acct["movements"].first
-    assert_equal "my_bank:acc-1:mv-1", mv["dedup_key"]
-    assert_equal(-1234,                 mv["amount_cents"])
+    txn = payload.transactions.first
+    assert_equal account.id, txn.account_id
+    assert_equal BigDecimal("-12.34"), txn.amount
+    assert_equal Date.new(2024, 3, 15), txn.date
+    assert_equal "Coffee", txn.description
   end
 end
 ```
+
+A capture-only provider (no `api_client:`, data via `captured:`) has no
+client to fake and no credentials to map: run the real Extract stage over
+a synthetic connect context instead, which tests the `captured:`
+declaration too — see `n26/test/n26_harness.rb`. Keep date assertions
+independent of the machine's time zone.
 
 Run everything with:
 
@@ -488,24 +564,24 @@ Before you commit your provider, walk through this list:
 - [ ] **No bank HTML/JSON captures with personal data in `test/`.**
       Hand-craft the minimal fixture a test needs. If you must use real
       shape, scrub amounts, names, and IDs.
-- [ ] **Extractor catches per-product errors** but lets authentication
-      errors bubble up so the user is prompted to re-login.
-- [ ] **You've read every line of `workflow.yml`, `extractor.rb`, and
-      `normalizer.rb` you wrote**, and you understand what each step
-      does. Future contributors will copy from you.
-- [ ] **No `eval`, no `send` with a user-controlled string, no
-      `Object.const_get` with interpolation.** The framework's
-      `load_client_ext` escape hatch requires explicit `module:` names
-      exactly to avoid this.
+- [ ] **The extract plan isolates per-product failures** (`safe:` /
+      `on_error: warn`) but never masks an expired session, so the user is
+      prompted to re-login.
+- [ ] **You've read every line of `workflow.yml` and `config.yml` you
+      wrote**, and you understand what each step does. Future
+      contributors will copy from you.
+- [ ] **A `captured:` entry names data, never a cookie or token** — plan
+      output is persisted (`--dump-raw`, run artifacts).
 - [ ] **Tests pass under `bundle exec rake test:<your_provider>`.**
 
 ## 8. Submission checklist
 
 - [ ] Directory is snake_case and matches `config.key`.
-- [ ] `workflow.yml` is version: 1 and parses through
-      `Freentonic::WorkflowSchema.load(path)` without raising.
-- [ ] `extractor.rb` and `normalizer.rb` are the only Ruby files in the
-      provider dir (plus tests under `test/`).
+- [ ] `workflow.yml` is version: 1 and `freentonic --lint` is clean.
+- [ ] Extract and normalize are both plans: no `ruby:` stage, no
+      `api_client.ext`, and no Ruby in the provider dir outside `test/`.
+- [ ] CI is green against the pinned freentonic release — if you need a
+      newer one, see "After you hand the drafts over" in `AGENTS.md`.
 - [ ] README.md's provider table in the repo root lists your new
       provider with status (`v1`, `experimental`, `deprecated`, …) and
       a one-sentence note.
@@ -517,15 +593,15 @@ Before you commit your provider, walk through this list:
 If you're unsure how to model something, read the existing providers —
 they cover different styles of API and login flow:
 
-- [`ing/`](../ing) — uses the legacy `genoma_api` shape. Credit card
-  balance is recomputed from movement legs. Shows offset-based
-  pagination, `derived_credentials` regex extraction from a cookie
-  header, and a `wait_for_shadow_selector` + `enter_pin_pad` login.
-- [`unicaja/`](../unicaja) — uses the Univia REST API. Shows a
-  POST-form API client, multiple product types (cuentas + tarjetas +
-  préstamos) in one extractor, credit-card filtering logic, and the
-  `tokencsrf` header capture flow. Manual cursor pagination in the
-  extractor for extended history.
+- [`ing/`](../ing) — the v2 `/search` API. Shows `derived_credentials`
+  regex extraction from a cookie header, a `wait_for_shadow_selector` +
+  `enter_pin_pad` login, and a declarative `elevate:` phase (PSD2 push
+  approval + Bearer rebind) gated on the lookback.
+- [`unicaja/`](../unicaja) — the Univia REST API. Shows a POST-form API
+  client, multiple product types (cuentas + tarjetas + préstamos) in one
+  extract plan, a `when:` gate for the extended-history fetch with
+  endpoint-level cursor pagination, and the `tokencsrf` header capture
+  flow.
 - [`revolut/`](../revolut) — PKCE OAuth login, push-notification 2FA,
   cookie+header auth. Multi-product fetch (wallet, cards, vaults) with
   cursor-paginated transactions. Shows `capture_cookie_header` for
@@ -535,5 +611,12 @@ they cover different styles of API and login flow:
   via `prompt_stdin_and_fill`, per-digit PIN entry via `secret(PIN[N])`
   indexing, `:has()` scoped clicks, manual offset pagination with
   `{page_offset}` (avoiding the reserved `{offset}`), and the
-  `record_requests` + `dump_requests` investigation pattern. Also shows
-  handling a flat category hash vs the more common nested array.
+  `record_requests` + `dump_requests` investigation pattern. Its
+  normalizer is still a Ruby `normalizer.rb` pending a port, so it
+  needs `FREENTONIC_ALLOW_PROVIDER_RUBY=1` — don't copy that part.
+- [`n26/`](../n26) — **no usable API**: the web app encrypts its
+  requests, so the workflow drives the app with in-app clicks after a
+  hydration settle, captures its GraphQL responses, pages "Load more"
+  history with `click_while_present`, and hands everything to the plan
+  through `captured:`. Its tests run the real Extract stage
+  (`n26/test/n26_harness.rb`).

@@ -1,6 +1,8 @@
 # Procedure: Creating a New Freentonic Provider
 
-Derived from the Revolut provider development session (2026-04-12). This document captures what worked, what didn't, the problems encountered, and how they were solved — intended as a reusable playbook for creating future providers.
+Derived from the Revolut provider development session (2026-04-12) and updated since. This document captures what worked, what didn't, the problems encountered, and how they were solved — intended as a reusable playbook for creating future providers.
+
+> **Providers are declarative.** Revolut was first written with a Ruby `extractor.rb` and `normalizer.rb`; it, ING, Unicaja and N26 now use an `extract: plan:` and a `normalize: plan:` in `workflow.yml`, and freentonic ≥ 0.18.0 refuses provider Ruby unless `FREENTONIC_ALLOW_PROVIDER_RUBY=1` is set (production servers don't set it). The steps below are written for plans; the lessons from the Ruby era still hold where noted.
 
 ## Tooling
 
@@ -12,7 +14,7 @@ This repo includes tools that automate the mechanical parts:
 | `rake har[path/to/file.har]` | Analyze a HAR file — lists endpoints, auth headers, login flow, pagination |
 | `rake har[path,api.host.com]` | Same, filtered to a specific API host |
 
-Shared helpers (`lib/freentonic/providers/helpers.rb`) provide `safe_fetch`, `cents()`, `parse_date()`, and `parse_timestamp_ms()` — already included in scaffolded files.
+What the old Ruby helpers did is now built into the plans: `safe: true` on a plan `fetch:` replaces `safe_fetch`, and the `apply:` functions `cents`, `parse_date` and `parse_timestamp_ms` replace the helpers of the same name (list them all with `freentonic --schema-json`).
 
 ---
 
@@ -26,8 +28,8 @@ Building a provider took ~75 minutes from zero to working end-to-end. The time w
 | HAR capture + analysis | ~10 min | User captures, agent analyzes URL patterns |
 | Scaffold + first workflow | ~5 min | Directory, stub files, initial YAML |
 | Login flow iteration | ~30 min | **Most time-consuming** — 7 attempts to get right |
-| Extractor | ~5 min | Mostly worked first try |
-| Normalizer | ~10 min | 3 fixes needed from real data inspection |
+| Extractor (then Ruby; now an extract plan) | ~5 min | Mostly worked first try |
+| Normalizer (then Ruby; now a normalize plan) | ~10 min | 3 fixes needed from real data inspection |
 
 **The login flow is where all the pain is.** Everything else is mechanical once you have a working session and a raw dump.
 
@@ -91,13 +93,12 @@ This produces a structured report with:
 rake new[my_bank]
 ```
 
-This generates the full directory with best-practice patterns already baked in:
-- `workflow.yml` with `_if_present` login pattern and `wait_network_idle` for session handling
-- `extractor.rb` with `safe_fetch` helper included
-- `normalizer.rb` with `cents()` and `parse_date()` helpers included
+This generates the directory with best-practice patterns already baked in:
+- `workflow.yml` with the `_if_present` login pattern, `wait_network_idle` for session handling, a starter `extract: plan:` (a `safe: true` per-product fetch) and a starter `normalize: plan:` (`cents`, `parse_date`, `build_account` / `build_transaction`)
+- `config.yml` for the constants the normalize plan reads
 - Test files with working boilerplate
 
-The scaffolded tests pass immediately (`rake test:my_bank`), so you can iterate from a green baseline.
+The scaffolded tests pass immediately (`rake test:my_bank`), so you can iterate from a green baseline. Lint as you go: `freentonic --lint --workflow my_bank/workflow.yml`.
 
 ### Step 4: Write the Workflow YAML — Login Flow
 
@@ -203,24 +204,23 @@ bin/freentonic --workflow <provider>/workflow.yml \
 2. Vault balance is a Hash (`{"amount": 0, "currency": "EUR"}`), pocket balance is a plain integer (cents)
 3. Transaction amounts are already in minor units (cents) — different from ING/Unicaja which use major units
 
-**Lesson learned:** NEVER write the normalizer before inspecting the raw dump. Amount units, date formats, and nesting structures are impossible to guess and vary wildly between providers.
+**Lesson learned:** NEVER write the normalize plan before inspecting the raw dump. Amount units, date formats, and nesting structures are impossible to guess and vary wildly between providers.
 
-### Step 7: Write the Extractor
+### Step 7: Write the Extract Plan
 
-Follow the contract from `docs/creating-a-provider.md § 3`:
-```ruby
-def call(client:, credentials:, from_date:, stdout:, stderr:)
-```
+Write an `extract: plan:` in `workflow.yml` — reference in freentonic's [`extract-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/extract-plan.md); `revolut/` and `unicaja/` are real ones.
 
 **Key patterns:**
-- **Per-product error handling:** `safe_fetch` wrapper — one failing product shouldn't sink the run
-- **Pagination in the extractor, not the YAML** — for cursor-based pagination, implement the loop manually (like Unicaja's pattern)
-- **Safety cap:** `MAX_TRANSACTIONS_SAFETY_CAP = 10_000` to prevent runaway pagination
-- **Always log progress:** `stdout.puts "  Fetching X..."` → `stdout.puts "    → N items"`
+- **Per-product error handling:** `safe: true` (or `on_error: { warn: … }`) on per-product fetches — one failing product shouldn't sink the run. The product list itself is *not* safe: a dead session must fail as "re-run connect", not as an empty sync.
+- **Pagination on the endpoint, not in the plan** — declare `pagination:` on the `api_client` endpoint (`kind: cursor` with `cursor_from_last_row` and `continue_when`, as in `revolut/workflow.yml`); the framework walks the pages and the plan sees one flattened list.
+- **Bound it by the lookback:** `continue_when: { cursor_gt: { field: …, value: "{from_ms}" } }` stops paging at the window start.
+- **Progress is logged by the framework** for every fetch; add `note:` steps only for provider-specific context.
 
-**Pagination gotcha (Revolut):** The `to` cursor parameter must be declared in the endpoint YAML params AND passed by the extractor. If you forget to add it to the YAML, the framework silently drops it and you get the same first page repeatedly — pagination appears to work (no errors) but only returns 1-2 pages.
+**Pagination gotcha (Revolut):** The `to` cursor parameter must be declared in the endpoint YAML params. If you forget it, the framework drops it and you get the same first page repeatedly — pagination appears to work (no errors) but only returns 1-2 pages. `--lint` now rejects an undeclared parameter.
 
-### Step 8: Write the Normalizer (iterate with `--from-raw`)
+**No usable API?** When the app's requests can't be replayed (N26 encrypts them in the page), capture its responses instead and declare them in a top-level `captured:` block — see the N26 reference below and freentonic's [capturing data from a web app's own responses](https://github.com/GermanDZ/freentonic/blob/main/docs/workflow-action-capture-response-json.md#capturing-data-from-a-web-apps-own-responses).
+
+### Step 8: Write the Normalize Plan (iterate with `--from-raw`)
 
 This is the fast loop — no bank contact needed:
 ```sh
@@ -229,21 +229,24 @@ bin/freentonic --workflow <provider>/workflow.yml \
   --export json --export-path /tmp/<provider>_normalized.json
 ```
 
+Reference in freentonic's [`normalize-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/normalize-plan.md); the output is the canonical payload, built with `build_account` / `build_transaction`.
+
 **Key patterns:**
-- **`cents()` helper must handle multiple types:**
-  - `Numeric` → may already be in cents (Revolut) or in major units (ING/Unicaja)
-  - `Hash` → `{"amount": 12.34, "currency": "EUR"}`
-  - `String` → `"12,34"` (comma as decimal separator)
-- **IBAN may be deeply nested** — Revolut: `details.accounts[0].iban`, not top-level
-- **Date parsing must handle multiple formats** — Unix ms timestamps, ISO 8601, DD/MM/YYYY
+- **`apply: cents` handles every amount shape** — a number in major units (ING/Unicaja), one already in minor units (Revolut: `already_minor: true`), a `{"amount", "currency"}` Hash, or a comma-decimal String (`"12,34"`)
+- **IBAN may be deeply nested** — Revolut: `details.accounts[0].iban`, not top-level; `select:` a dotted path, or `index_by:` with `where:` / `pick:` to find it in a list. `remove_whitespace` it if it arrives space-grouped
+- **Dates come in many formats** — `parse_date` (ISO, DD/MM/YYYY) and `parse_timestamp_ms` (Unix ms). Give `parse_date` explicit `input_timezone` / `output_timezone` from `config.yml`, so the booking day doesn't depend on where freentonic runs
+- **Constants go in `config.yml`** (institution, status maps, metadata allowlists), read as `{config.*}`
 
 **What went well:** Once we had the raw dump, normalizer iteration was fast — each `--from-raw` run takes milliseconds.
 
 ### Step 9: Write Tests
 
-Two mandatory test files:
-1. **Credential extraction test** — validates workflow YAML maps context to credentials
-2. **Normalizer test** — hand-crafted fixtures matching real data shapes (amounts in correct units, correct nesting)
+Mandatory test files:
+1. **Extract plan test** — runs the workflow's plan against a fake api_client (`unicaja/test/unicaja_extract_plan_test.rb`), or, for a capture-only provider, the real Extract stage over synthetic captures (`n26/test/n26_harness.rb`)
+2. **Normalizer test** — hand-crafted raw fixtures matching real data shapes (amounts in correct units, correct nesting) through `Freentonic::Normalizers::Builder.for_workflow`
+3. **Credential extraction test**, when the workflow has a `credentials:` block — validates it maps the connect context to credentials
+
+Porting an existing Ruby normalizer? Dump goldens with the Ruby one first (`rake golden:dump[<provider>]`) and add a parity test that the plan reproduces them byte for byte, as ING, Revolut and Unicaja did.
 
 Update test fixtures after inspecting real data shapes. Initial guesses will be wrong.
 
@@ -273,7 +276,7 @@ bundle exec rake test  # all providers, not just yours
 | 2 | Session persistence not handled | 3 times | Use `_if_present` pattern from day one; handle 3+ login states |
 | 3 | Missing framework action | 2 times | Read `docs/workflow-actions.md` — full reference in framework repo |
 | 4 | `{offset}` is a reserved token | 2 times | Never use `{offset}` in endpoint params — it's intercepted by the pagination engine and returns `nil`. Use `{page_offset}` instead |
-| 5 | `batch_keys` silently unwraps responses | 1 time | If your extractor reads `result["count"]` or other metadata alongside the batch, do NOT set `batch_keys` — it strips the wrapper and returns only the array |
+| 5 | `batch_keys` silently unwraps responses | 1 time | If your plan reads `count` or other metadata alongside the batch, do NOT set `batch_keys` — it strips the wrapper and returns only the array |
 | 6 | Response structure different from docs/old code | 2 times | Always use `record_requests` + `dump_requests` to inspect actual API responses with bodies; never trust old scripts or assume shapes |
 | 7 | Amount units wrong | 1 time | Inspect `--dump-raw` before normalizer |
 | 8 | Pagination param not in YAML | 1 time | All params must be declared in endpoint YAML |
@@ -295,7 +298,7 @@ bundle exec rake test  # all providers, not just yours
 4. **Read `docs/workflow-actions.md` in the framework repo** — the full action reference lives there, not in provider code
 5. **Declare ALL endpoint params in YAML** — including pagination cursors. Never use `{offset}` — it's reserved
 6. **Use `record_requests` + `dump_requests` early** — don't rely on external HAR captures. The framework's built-in capture gets response bodies reliably and works within the authenticated session
-7. **Don't set `batch_keys` unless you only need the array** — if your extractor needs response metadata (count, cursors, etc.), omit `batch_keys` and read the full response hash
+7. **Don't set `batch_keys` unless you only need the array** — if your plan needs response metadata (count, cursors, etc.), omit `batch_keys` and read the full response hash
 8. **Test with `--isolated` for fresh state, then without for session persistence** — both must work
 9. **Handle ALL login states from day one** — fresh, remembered-email, and active-session. Use `wait_for_first_of` with selectors for each state, then `_if_present` for every action
 
@@ -329,23 +332,23 @@ last page straddles the window start.
 The complete working implementation serves as a reference for future providers:
 
 - `revolut/workflow.yml` — handles 3 login states, PKCE OAuth, app push 2FA, cookie+header auth
-- `revolut/extractor.rb` — multi-product fetch (wallet, bank details per currency, cards, vaults), cursor-paginated transactions with safety cap
-- `revolut/normalizer.rb` — handles integer cents (pockets/transactions), Hash amounts (vaults), Unix ms dates, deeply nested IBAN
-- `revolut/test/` — credential extraction + normalizer tests with real data shapes
+- its `extract: plan:` — multi-product fetch (wallet, bank details per currency, cards, vaults), `safe:` per product, cursor-paginated transactions bounded by `{from_ms}` on the endpoint
+- its `normalize: plan:` — integer cents (pockets/transactions), Hash amounts (vaults), Unix ms dates, deeply nested IBAN
+- `revolut/test/` — credential extraction + normalizer tests with real data shapes, and the golden parity test from the Ruby-to-plan port
 
 ## Reference: Fintonic Provider Final State
 
 Fintonic is an aggregator (not a bank) with a different set of challenges:
 
 - `fintonic/workflow.yml` — 3-state login (email+PIN, remembered-email+PIN, straight-to-2FA), cookie banner dismissal, SMS 2FA with `prompt_stdin_and_fill`, Bearer token capture. Uses `:has()` CSS selector to scope button clicks: `body:has(#usernameForm) #loginButton`
-- `fintonic/extractor.rb` — single `/transaction/list` endpoint fetches all banks at once (no per-bank iteration needed). Manual offset pagination with `{page_offset}` (not `{offset}`!). Separate read + unread fetches
-- `fintonic/normalizer.rb` — category tree is a flat hash (`{id: {name, ancestors}}`) not an array. Amounts are already in cents. `CREDITCARD` type mapping (not `CREDIT_CARD`)
+- its `extract: plan:` — single `/transaction/list` endpoint fetches all banks at once (no per-bank iteration needed). Offset pagination with `{page_offset}` (not `{offset}`!). Separate read + unread fetches, merged with `concat:` + `dedup_by:`
+- `fintonic/normalizer.rb` — **still Ruby**, so it needs `FREENTONIC_ALLOW_PROVIDER_RUBY=1` until it's ported to a plan. Category tree is a flat hash (`{id: {name, ancestors}}`) not an array. Amounts are already in cents. `CREDITCARD` type mapping (not `CREDIT_CARD`)
 - `fintonic/test/` — credential + normalizer tests
 
 ### Key Fintonic-specific lessons:
 
 1. **`{offset}` is reserved** — the framework's `ep_interpolate_val` intercepts it for automatic pagination. Use `{page_offset}` for manual pagination
-2. **Don't set `batch_keys`** when your extractor needs `result["count"]` for pagination — `batch_keys` unwraps the response and you lose the metadata
+2. **Don't set `batch_keys`** when you need the response's `count` for pagination — `batch_keys` unwraps the response and you lose the metadata
 3. **Use `record_requests` + `dump_requests`** to inspect API responses instead of relying on Chrome HAR exports (which often lack response bodies)
 4. **The `investigate` phase pattern** — add to pipeline temporarily, record traffic, navigate key pages, dump to ndjson, pause for manual exploration. Remove before committing
 5. **PIN entry with individual inputs** — use `fill` per input (`input#password0` through `#password3`) with `secret(USER_PIN[N])` indexing

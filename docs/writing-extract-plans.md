@@ -1,24 +1,27 @@
-# Writing extractors as declarative plans
+# Writing extract plans
 
-Most extractors do the same thing: call an endpoint, loop over the rows,
-call another endpoint per row, assemble a hash. When that's *all* yours
-does, you can delete `extractor.rb` and write an `extract: plan:` block in
-`workflow.yml` instead — **zero extractor Ruby**.
+Every provider's extraction is an `extract: plan:` block in `workflow.yml`:
+call the declared endpoints, loop over the rows, call another endpoint per
+row, assemble the raw hash — **zero extractor Ruby**. A Ruby
+`extractor.rb` (`extract: ruby:`) is refused at run start by freentonic ≥
+0.18.0 unless `FREENTONIC_ALLOW_PROVIDER_RUBY=1` is set, and production
+servers don't set it.
 
 This is the provider-author playbook. For the full grammar reference see
 the framework's
 [docs/extract-plan.md](https://github.com/GermanDZ/freentonic/blob/main/docs/extract-plan.md);
-this doc is about *your* decision and *your* migration.
+this doc covers what a plan can express, the grammar in one screen, and
+how to migrate a legacy `extractor.rb`.
 
 ## TL;DR
 
 ```yaml
-# Before — extractor.rb + this in workflow.yml:
+# Legacy — extractor.rb + this in workflow.yml (refused by default):
 extract:
   ruby: ./extractor.rb
   class: Freentonic::Providers::MyBank::Extractor
 
-# After — no extractor.rb, just this:
+# Now — no extractor.rb, just this:
 extract:
   plan:
     steps:
@@ -42,31 +45,36 @@ extract:
       movements: "{movements}"
 ```
 
-That's the exact equivalent of the extractor in
-[creating-a-provider.md § 3](creating-a-provider.md#3-write-the-extractor).
+This is the same plan worked through in
+[creating-a-provider.md § 3](creating-a-provider.md#3-write-the-extract-plan).
 
-## Should I use a plan?
+## What a plan can express
 
-**Yes** — if your extractor only:
+A plan:
 
-- [ ] calls endpoints declared in your `api_client:` block,
-- [ ] loops over a response's rows to drive per-row calls,
-- [ ] digs sub-values out of responses (a field, a nested field, a
-      first-present fallback),
-- [ ] assembles the results into the raw hash.
+- calls endpoints declared in your `api_client:` block (pagination is
+  declared on the endpoint),
+- loops over a response's rows to drive per-row calls,
+- digs sub-values out of responses (a field, a nested field, a
+  first-present fallback), joins lists (`index_by:` / `lookup:`), merges
+  and dedups (`concat:`, `dedup_by:`),
+- gates steps on the lookback or on what came back (`when:`), warns or
+  aborts with an operator message,
+- applies registered pure functions (`apply:`) for per-row computation,
+- reads browser-captured data through a top-level `captured:` block, for
+  a provider with no usable API (`n26/`).
 
-**No — keep `extractor.rb`** if it does any of:
+What it deliberately can't do — `raw_request` to an undeclared endpoint,
+arbitrary Ruby, mid-run auth rotation from inside the plan — is not a
+reason to write an `extractor.rb`. Look for the framework feature that
+covers it first: an SCA handshake with operator approval and a Bearer
+rebind is the declarative `elevate:` phase (ING). If nothing does, it's a
+framework gap to raise upstream (see `AGENTS.md`, "Proposing new
+framework capabilities").
 
-- [ ] `client.raw_request(...)` to an endpoint you didn't declare,
-- [ ] `client.update_auth_headers!(...)` mid-run (e.g. a fresh Bearer
-      after SCA),
-- [ ] anything gated on `remote_prompt_store` (operator approval mid-fetch),
-- [ ] per-row math, coercion, or `if` logic beyond "skip when nil".
-
-Rule of thumb from the reference providers: **Revolut**, **Fintonic**, and
-**Unicaja** are all plans. **ING** is not, and never will be — SCA
-handshakes, Bearer rotation, and product routing are genuinely imperative.
-When in doubt, stay in Ruby; converting later is mechanical.
+All five providers here extract with a plan: **Revolut**, **Fintonic**,
+**Unicaja**, **ING** (with an `elevate:` phase for SCA) and **N26**
+(capture-only).
 
 > Fintonic and Unicaja used to sit in between — a coalesced date range, a
 > read/unread merge+dedup (Fintonic), and a conditional extended-history
@@ -74,8 +82,8 @@ When in doubt, stay in Ruby; converting later is mechanical.
 > `coalesce:`, `concat:`, `dedup_by:`, and the `when:` gate) cover exactly
 > those, so both are now `extract: plan:`. What stayed out of the grammar:
 > Unicaja's credit-vs-debit **string** filter — that classify-and-drop
-> lives in `unicaja/normalizer.rb`, because a `when:` gate is numeric /
-> presence only, not a string-predicate DSL.
+> lives in Unicaja's normalize plan (a `skip_when:` on the card type),
+> because it's a property of the account, not of what to fetch.
 
 ## The grammar in one screen
 
@@ -104,7 +112,10 @@ Two more pre-bound names beyond `from_date`/`from_ms`/`now_ms`: `today` (a
 Date) and `lookback_days` (`today - from_date`, the figure a `when:` gate
 tests to toggle an extended-history fetch).
 
-## Migration recipe
+## Migrating a legacy `extractor.rb`
+
+No provider in this repo has one any more; this is for porting one from
+elsewhere.
 
 1. **Capture a baseline.** With your current `extractor.rb`, run a real
    sync (or `--from-raw` off a saved response) and dump the raw payload:
@@ -151,8 +162,8 @@ tests to toggle an extended-history fetch).
   to get a partial payload.
 - **`fetch:` can only name a declared endpoint.** If you catch yourself
   wanting `raw_request` or a method that isn't in `api_client.endpoints`,
-  that's the signal to stay in `extractor.rb`. This is enforced — an
-  undeclared name fails `--lint`.
+  declare the endpoint — or, if it can't be declared, raise the framework
+  gap upstream. This is enforced — an undeclared name fails `--lint`.
 - **Pagination stays on the endpoint.** `pagination: offset|cursor` lives
   in your `api_client:` endpoint declaration, not the plan. A single
   `fetch:` already returns the fully-paginated, batch-unwrapped array.
@@ -172,4 +183,5 @@ tests to toggle an extended-history fetch).
 - [ ] Existing normalizer + tests pass unchanged.
 - [ ] Every `fetch:` names an endpoint declared in `api_client:`.
 
-See **Revolut** in this repo for a complete, real plan-based provider.
+See **Revolut** and **Unicaja** in this repo for complete, real plans
+over an API, and **N26** for a capture-only one.
