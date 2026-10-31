@@ -342,7 +342,7 @@ Fintonic is an aggregator (not a bank) with a different set of challenges:
 
 - `fintonic/workflow.yml` — 3-state login (email+PIN, remembered-email+PIN, straight-to-2FA), cookie banner dismissal, SMS 2FA with `prompt_stdin_and_fill`, Bearer token capture. Uses `:has()` CSS selector to scope button clicks: `body:has(#usernameForm) #loginButton`
 - its `extract: plan:` — single `/transaction/list` endpoint fetches all banks at once (no per-bank iteration needed). Offset pagination with `{page_offset}` (not `{offset}`!). Separate read + unread fetches, merged with `concat:` + `dedup_by:`
-- `fintonic/normalizer.rb` — **still Ruby**, so it needs `FREENTONIC_ALLOW_PROVIDER_RUBY=1` until it's ported to a plan. Category tree is a flat hash (`{id: {name, ancestors}}`) not an array. Amounts are already in cents. `CREDITCARD` type mapping (not `CREDIT_CARD`)
+- `fintonic/normalizer.rb` — **still Ruby**: Fintonic is now a legacy provider, kept only for importing historical data, so an import needs `FREENTONIC_ALLOW_PROVIDER_RUBY=1`. Category tree is a flat hash (`{id: {name, ancestors}}`) not an array. Amounts are already in cents. `CREDITCARD` type mapping (not `CREDIT_CARD`)
 - `fintonic/test/` — credential + normalizer tests
 
 ### Key Fintonic-specific lessons:

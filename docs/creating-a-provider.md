@@ -583,7 +583,7 @@ Before you commit your provider, walk through this list:
 - [ ] CI is green against the pinned freentonic release — if you need a
       newer one, see "After you hand the drafts over" in `AGENTS.md`.
 - [ ] README.md's provider table in the repo root lists your new
-      provider with status (`v1`, `experimental`, `deprecated`, …) and
+      provider with status (`v1`, `experimental`, `deprecated`, `legacy`, …) and
       a one-sentence note.
 - [ ] Pre-submission security walkthrough above.
 - [ ] `bundle exec rake test` green locally.
@@ -611,9 +611,10 @@ they cover different styles of API and login flow:
   via `prompt_stdin_and_fill`, per-digit PIN entry via `secret(PIN[N])`
   indexing, `:has()` scoped clicks, manual offset pagination with
   `{page_offset}` (avoiding the reserved `{offset}`), and the
-  `record_requests` + `dump_requests` investigation pattern. Its
-  normalizer is still a Ruby `normalizer.rb` pending a port, so it
-  needs `FREENTONIC_ALLOW_PROVIDER_RUBY=1` — don't copy that part.
+  `record_requests` + `dump_requests` investigation pattern. It's a
+  **legacy** provider, kept only for importing historical data: its
+  normalizer is still a Ruby `normalizer.rb` (an import needs
+  `FREENTONIC_ALLOW_PROVIDER_RUBY=1`) — don't copy that part.
 - [`n26/`](../n26) — **no usable API**: the web app encrypts its
   requests, so the workflow drives the app with in-app clicks after a
   hydration settle, captures its GraphQL responses, pages "Load more"
