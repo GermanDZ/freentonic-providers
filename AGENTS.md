@@ -797,6 +797,14 @@ should weigh in before you draft the PR.
   an extractor.rb hack now, remove it when the PR lands"), add a
   `TODO(upstream #<issue>):` comment next to the hack so it's easy
   to find and remove later.
+- **Once the upstream PR merges, the provider still waits for a
+  release.** This repo's CI checks out freentonic at a pinned
+  **release tag** (`.github/workflows/ci.yml`), so a provider that uses a
+  new action or key fails CI until freentonic ships it. The order is:
+  merge the freentonic PR(s) → release freentonic (version bump +
+  CHANGELOG + tag) → bump the CI `ref:` and the `freentonic (x.y.z)`
+  lines in `Gemfile.lock` together → merge the provider PR. Say which
+  release the provider needs in its README row.
 - **If the user tells you to proceed without an upstream fix**,
   treat that as an override: note it in the PR description (if/when
   there is one for this provider), and make sure the provider's
@@ -838,6 +846,9 @@ A provider is ready to ship when **all** of these are true:
 - [ ] `bundle exec rake test:<provider>` is green.
 - [ ] `bundle exec rake test` (full suite) is green — you haven't
       broken any other provider.
+- [ ] CI is green against the pinned freentonic release. If the
+      provider needs newer freentonic, that release exists and the pin
+      is bumped (see "After you hand the drafts over").
 - [ ] The README table has a new row with accurate status.
 - [ ] No secrets, PII, or verbatim bank responses anywhere in the
       diff.

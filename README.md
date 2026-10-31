@@ -3,9 +3,13 @@
 Ready-to-use workflow YAMLs and provider plugins for the
 [freentonic](https://github.com/GermanDZ/freentonic) framework.
 
-Each subdirectory is a self-contained provider: a `workflow.yml` plus the
-sibling `normalizer.rb` it references. Extraction is fully declarative
-across every provider — no provider carries an `extractor.rb` anymore.
+Each subdirectory is a self-contained provider: a `workflow.yml` plus its
+`config.yml`. Extraction is fully declarative across every provider — no
+provider carries an `extractor.rb` anymore — and so is normalization,
+except Fintonic's, which is still a Ruby `normalizer.rb`. freentonic ≥ 0.18.0
+refuses provider Ruby unless started with `FREENTONIC_ALLOW_PROVIDER_RUBY=1`,
+so on a default (declarative-only) server Fintonic fails at run start until
+its normalizer is ported to `normalize: plan:`.
 
 ## Providers
 
@@ -14,7 +18,7 @@ across every provider — no provider carries an `extractor.rb` anymore.
 | ING España | [`ing/`](ing)     | v1     | Plan    | Drives the v2 `/search` API. SCA is declarative: the workflow's `elevate:` phase runs the PSD2 handshake (operator push approval + host-scoped Bearer rebind) when lookback > 90d. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — `index_by:` + `lookup:` join ING's legacy↔modern product lists, one `/search` call per UUID, movements land in a `movements_by_uuid` map the normalizer joins. No `extractor.rb`. |
 | Unicaja    | [`unicaja/`](unicaja) | v1     | Plan    | Drives the Univia REST API. Requires `tokencsrf`. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — a `when:` gate drives the >30-day extended-history fetch, `dedup_by:` merges the two movement endpoints. The credit/debit filter lives in the normalizer. No `extractor.rb`. |
 | Revolut    | [`revolut/`](revolut) | v1     | Plan    | Drives the Revolut retail API. Cookie auth + app push 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — no `extractor.rb`. |
-| Fintonic   | [`fintonic/`](fintonic) | v1   | Plan    | Drives the Fintonic REST API. Bearer auth + SMS 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — offset pagination on the endpoint, `concat:` + `dedup_by:` for the read/unread merge. No `extractor.rb`. |
+| Fintonic   | [`fintonic/`](fintonic) | v1   | Plan    | Drives the Fintonic REST API. Bearer auth + SMS 2FA. Declarative [`extract: plan:`](docs/writing-extract-plans.md) — offset pagination on the endpoint, `concat:` + `dedup_by:` for the read/unread merge. No `extractor.rb`. **Normalizer is still Ruby** (`normalizer.rb`): needs `FREENTONIC_ALLOW_PROVIDER_RUBY=1` until ported to `normalize: plan:`. |
 | N26        | [`n26/`](n26)         | experimental | Plan | Drives the app.n26.com web app. Its GraphQL variables are encrypted in the browser, so the workflow captures the app's own `spacesForOverview` / `getSpaceTransactions` / `getSpace` responses and a declarative [`extract: plan:`](docs/writing-extract-plans.md) reads them via `{captured.*}` (balances + IBANs of every Space; the primary Space's history via "Load more", bounded by the sync's lookback). Every full login needs an N26-app approval. Requires a freentonic with the top-level `captured:` declaration (freentonic ≥ 0.19.0: GermanDZ/freentonic#49), `click_while_present` and `capture_response_json all: true` (#50). No `extractor.rb`. |
 
 ## Usage
