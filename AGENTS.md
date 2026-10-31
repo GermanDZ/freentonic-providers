@@ -12,25 +12,35 @@ for the [freentonic](https://github.com/GermanDZ/freentonic) framework.
 Your job, when invoked here, is almost always one of:
 
 1. **Add a new provider** (new bank / broker / utility).
-2. **Fix or improve an existing provider** (API shape drift, extractor
-   crashes, normalizer edge cases).
+2. **Fix or improve an existing provider** (API shape drift, extract-plan
+   or normalize-plan edge cases).
 3. **Debug a failing run** against a live provider.
 
 Every provider is a self-contained directory under the repo root:
 
 ```
 <provider>/
-├── workflow.yml      # declarative login + API client config
-├── extractor.rb      # hits the API with captured credentials → raw payload
-├── normalizer.rb     # raw payload → universal account/movement shape
+├── workflow.yml      # login + capture phases, api_client, and the two plans:
+│                     #   extract: plan:   captured session → raw payload
+│                     #   normalize: plan: raw payload → canonical payload
+├── config.yml        # constants the normalize plan reads as {config.*}
+│                     #   (institution, timezones, status maps, field allowlists)
 └── test/
-    ├── <provider>_extract_credentials_test.rb
+    ├── <provider>_extract_plan_test.rb
     └── <provider>_normalizer_test.rb
 ```
 
-The framework's `Stages::Extract` and `Stages::Normalize` load the Ruby
-files by relative path from the YAML. There is no registry, no gemspec
-change, no central wiring to edit.
+**Providers are declarative — no provider Ruby.** Extraction is an
+[`extract: plan:`](https://github.com/GermanDZ/freentonic/blob/main/docs/extract-plan.md) and normalization a
+[`normalize: plan:`](https://github.com/GermanDZ/freentonic/blob/main/docs/normalize-plan.md), both interpreted by the
+framework. The Ruby escape hatch (`extract: ruby:`, `normalize: ruby:`,
+`api_client.ext`) still exists but is **refused at run start** unless
+freentonic is started with `FREENTONIC_ALLOW_PROVIDER_RUBY=1`, and
+production servers run declarative-only. A new provider must not depend on
+it: if a plan can't express what you need, that is a framework gap — see
+"Proposing new framework capabilities". (Fintonic's `normalizer.rb` is the
+one remaining legacy file, pending a port.) There is no registry, no
+gemspec change, no central wiring to edit.
 
 ## Before you start — questions to ask the user
 
@@ -65,7 +75,7 @@ already answered any of them in the conversation, skip that question.
    **Preferred: ask the user for a HAR capture** of the login + a few
    representative API calls. See the "Getting a HAR capture" section
    below — this is the most efficient way to hand an agent everything
-   it needs to write the workflow YAML and extractor in one shot. If
+   it needs to write the workflow YAML and its extract plan in one shot. If
    the user has never exported a HAR before, walk them through it.
 
    If a HAR is not available, fall back to asking for:
@@ -265,9 +275,17 @@ Walking the HAR in this order will give you a complete YAML draft:
    note the pagination style (offset, cursor, page number) and limit.
 
 You can usually produce a first-draft workflow YAML from a HAR in
-under 15 minutes of reading. Hand it back to the user for review
-before you write any Ruby — the YAML is cheap to change, the
-extractor is not.
+under 15 minutes of reading. Hand the login phases and `api_client:`
+back to the user for review before you write the plans — they're cheap
+to change, while plans written against a misread endpoint shape are not.
+
+**No usable API?** Some web apps encrypt or sign their requests in the
+page, so nothing can be replayed from outside it. Then the data comes
+from the app's own responses (`capture_response_json`), handed to the
+extract plan through a top-level `captured:` block instead of
+`credentials:` + `api_client:`. `n26/` is the reference; read freentonic's
+[capturing data from a web app's own responses](#{FT}/workflow-action-capture-response-json.md#capturing-data-from-a-web-apps-own-responses)
+first — page hydration is the trap.
 
 ## Tools available in this repo
 
@@ -284,9 +302,10 @@ bundle exec rake test:<provider>
 # Run one test file directly (fastest feedback loop during iteration).
 ruby -I<provider> -I../freentonic/lib <provider>/test/<file>_test.rb
 
-# Validate a workflow YAML loads through the framework's parser.
-ruby -I../freentonic/lib -rfreentonic -e \
-  'Freentonic::WorkflowSchema.load("<provider>/workflow.yml")'
+# Statically validate a workflow: schema, plan verbs, {token} references,
+# endpoint names, captured:/credentials references. No Chrome, no network.
+ruby -I../freentonic/lib ../freentonic/bin/freentonic --lint \
+  --workflow <provider>/workflow.yml
 
 # Run the full freentonic CLI against a provider (requires the sibling
 # freentonic checkout at ../freentonic).
@@ -313,8 +332,8 @@ catches problems early.
 
 ```sh
 mkdir -p <provider>/test
-touch <provider>/{workflow.yml,extractor.rb,normalizer.rb}
-touch <provider>/test/<provider>_{normalizer,extract_credentials}_test.rb
+touch <provider>/{workflow.yml,config.yml}
+touch <provider>/test/<provider>_{extract_plan,normalizer}_test.rb
 ```
 
 ### Step 2: write workflow.yml
@@ -325,69 +344,81 @@ Start from the skeleton in `docs/creating-a-provider.md § 2`. Fill in:
 - `secrets:` = one entry per piece of information the user must type
 - `phases:` = login + capture steps derived from the user's DevTools
   capture (from question 5 above)
-- `credentials:` = what downstream stages will see — `require:` and
-  `map:` at minimum
+- `credentials:` = the auth the api_client needs — `require:` and
+  `map:` at minimum (omit it for a capture-only provider)
+- `captured:` = only for a capture-only provider: the captured responses
+  the extract plan reads as `{captured.*}`
 - `api_client:` = derived from question 4
-- `extract:` and `normalize:` = point at your sibling Ruby files,
-  using the module name `Freentonic::Providers::<CamelCase>::<Kind>`
+- `extract: plan:` and `normalize: plan:` = Steps 3 and 6
 
-Validate it parses before writing any Ruby:
+Put normalizer constants (institution, `scraper_version`, timezones,
+status maps, metadata allowlists) in `config.yml`. Lint after every
+change — it catches a typo'd endpoint, binding or action before any login:
 
 ```sh
-ruby -I../freentonic/lib -rfreentonic -e \
-  'p Freentonic::WorkflowSchema.load("<provider>/workflow.yml").config'
+ruby -I../freentonic/lib ../freentonic/bin/freentonic --lint \
+  --workflow <provider>/workflow.yml
 ```
 
-### Step 3: write the extractor
+### Step 3: write the extract plan
 
-Copy the contract from `docs/creating-a-provider.md § 3`. Key rules:
+An `extract: plan:` fetches the declared endpoints, loops over products
+and shapes the raw payload — reference and worked example in freentonic's
+[`extract-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/extract-plan.md); `ing/`, `unicaja/`,
+`revolut/` and `fintonic/` are real ones. Key rules:
 
-- **Catch errors at the boundary of a single product** (one account,
-  one card) so a single failing product doesn't sink the run.
-- **Let authentication errors bubble up.** They mean the user needs to
-  log in again, and swallowing them leads to silent empty dumps.
-- **Log every step to `stdout`** with the same `  ` indentation shape
-  as the ING/Unicaja extractors. Users read this output to diagnose
-  issues and pattern-match against known-good runs.
-- **Return JSON-serializable data only.** The framework will persist
-  your return value via `--dump-raw`, and if it can't JSON-round-trip
-  you'll find out an hour into debugging.
+- **Keep a failing product from sinking the run**: `safe: true` (or
+  `on_error: { warn: … }`) on per-product fetches.
+- **Fail loudly on what the run can't do without**: `on_error: { abort: … }`
+  on the product list, and `abort:` when an essential value is absent.
+  An empty-but-successful payload is the worst outcome — it looks like
+  "no transactions".
+- **Leave session expiry alone.** An expired session must surface as
+  "re-run connect", not be masked by `safe:`.
+- **Honour the lookback.** Pass `{from_date}` to the endpoint, or filter
+  on `{from_ms}` when the data arrives unfiltered.
+- **Keep the raw rows.** Reshape only as much as the normalize plan needs;
+  `--dump-raw` persists this output and it's what you iterate against.
 
-### Step 4: write a minimal extractor test
+### Step 4: write an extract plan test
 
-Before touching a real bank, prove the extractor's *shape* is correct
-with a fake API client:
+Before touching a real bank, run the plan against canned API responses:
 
 ```ruby
-# <provider>/test/<provider>_extractor_test.rb
+# <provider>/test/<provider>_extract_plan_test.rb
 require "minitest/autorun"
 require "stringio"
+require "date"
 require "freentonic"
-require_relative "../extractor"
 
-class MyBankExtractorTest < Minitest::Test
+class MyBankExtractPlanTest < Minitest::Test
+  WORKFLOW = File.expand_path("../workflow.yml", __dir__)
+
+  # Stands in for the generated api_client: one method per endpoint name.
   class FakeClient
-    def fetch_accounts
-      [{ "id" => "a1", "name" => "Checking", "balance" => 100.0 }]
-    end
-    def fetch_movements(account_id:, from_date:)
-      [{ "id" => "m1", "date" => "2024-03-15", "amount" => -5.0, "description" => "Coffee" }]
-    end
+    def fetch_accounts(**) = [{ "id" => "a1", "name" => "Checking", "balance" => 100.0 }]
+    def fetch_movements(**) = [{ "id" => "m1", "date" => "2024-03-15", "amount" => -5.0 }]
+  end
+
+  def extract
+    schema = Freentonic::WorkflowSchema.load(WORKFLOW)
+    Freentonic::ExtractPlan::PlanExtractor.new(
+      schema.raw.dig("extract", "plan"), endpoint_names: schema.api_client_endpoint_names
+    ).call(client: FakeClient.new, credentials: {}, from_date: Date.new(2024, 1, 1),
+           stdout: StringIO.new, stderr: StringIO.new)
   end
 
   def test_populates_movements_per_account
-    raw = Freentonic::Providers::MyBank::Extractor.new.call(
-      client: FakeClient.new,
-      credentials: { cookie: "fake" },
-      from_date: Date.new(2024, 1, 1),
-      stdout: StringIO.new, stderr: StringIO.new
-    )
-    assert_equal 1, raw.first["movements"].size
+    assert_equal 1, extract["movements"].fetch("a1").size
   end
 end
 ```
 
-Run it: `ruby -I<provider> -I../freentonic/lib <provider>/test/<provider>_extractor_test.rb`.
+A capture-only provider has no api_client to fake: run the real Extract
+stage over a synthetic connect context instead, so its `captured:`
+declaration is tested too — see `n26/test/n26_harness.rb`.
+
+Run it: `ruby -I<provider> -I../freentonic/lib <provider>/test/<provider>_extract_plan_test.rb`.
 
 ### Step 5: first live extract run
 
@@ -411,8 +442,11 @@ SMS 2FA, and a botched login can temporarily lock the account.
 
 ### Step 6: write the normalizer against the raw dump
 
-With `/tmp/<provider>_raw.json` in hand, write `normalizer.rb` and
-iterate via `--from-raw` (no bank contact):
+With `/tmp/<provider>_raw.json` in hand, write the `normalize: plan:`
+(reference and worked example in freentonic's
+[`normalize-plan.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/normalize-plan.md): `build_account`,
+`build_transaction`, `parse_date` with explicit timezones, `map_status`,
+`extract_fields`) and iterate via `--from-raw` (no bank contact):
 
 ```sh
 ruby -I../freentonic/lib ../freentonic/bin/freentonic \
@@ -424,16 +458,20 @@ ruby -I../freentonic/lib ../freentonic/bin/freentonic \
 Inspect `/tmp/<provider>_normalized.json`. Tweak. Repeat. This loop
 runs in milliseconds and costs nothing.
 
-Follow the universal payload shape in
-`docs/creating-a-provider.md § 4`. The keys are not optional — they're
-what every receiver downstream expects.
+The plan's output is freentonic's canonical payload (accounts +
+transactions, deterministic ids), defined in
+[`canonical-data-model.md`](https://github.com/GermanDZ/freentonic/blob/main/docs/canonical-data-model.md). Use the
+builders — they enforce it.
 
 ### Step 7: write a normalizer test
 
-Extract a minimal hand-crafted fixture from the raw dump (two
-accounts, three movements, covering every product kind the provider
-supports). Put it inline in the test file — do not commit the real
-dump. Assert on the shape of the output.
+Hand-craft a minimal raw fixture modelled on the dump (two accounts,
+three movements, covering every product kind the provider supports).
+Put it inline in the test file — do not commit the real dump. Run it
+through the workflow's own plan with
+`Freentonic::Normalizers::Builder.for_workflow(WORKFLOW, stdout:, stderr:).call(raw)`
+and assert on the canonical accounts and transactions. Make date
+assertions independent of the machine's time zone.
 
 ```sh
 bundle exec rake test:<provider>
@@ -459,7 +497,7 @@ from Step 6, you're done. If not, diff the two and iterate.
 Edit the provider table in the repo `README.md` to add a row:
 
 ```
-| <Provider Name> | [`<provider>/`](<provider>) | v1 | One-line description. |
+| <Provider Name> | [`<provider>/`](<provider>) | v1 | Plan | One-line description. |
 ```
 
 Pick the status honestly:
@@ -533,18 +571,26 @@ guessing.
 
 ### Normalizer produces `[]` instead of accounts
 
-Your extractor returned the right shape but your normalizer doesn't
-know about a field. Add a debug `p` call at the top of `#call` (local
-only, don't commit), rerun with `--from-raw`, check the structure.
-Remove the `p` before handing back.
+The raw payload has the right shape but a `select:` path doesn't match
+it, so the plan's loop source is empty. Check the paths against the
+actual `/tmp/<provider>_raw.json` (keys only), and `default:` only what
+may legitimately be absent — a silent default hides exactly this.
 
-### `bundle exec rake test` passes but the CLI fails
+### "This workflow uses provider Ruby … declarative-only mode"
 
-You probably referenced a constant from one file inside another
-without a `require_relative`. The test file loads both; the CLI loads
-only what the YAML declares. Check: every `XXXXX::Something` reference
-in `normalizer.rb` is either stdlib, from `Freentonic::`, or backed by
-a `require_relative` at the top of the file.
+The workflow still has `extract: ruby:`, `normalize: ruby:` or
+`api_client.ext`, and freentonic refuses provider Ruby unless started
+with `FREENTONIC_ALLOW_PROVIDER_RUBY=1`. Don't ask for the env var: port
+the stage to a plan. For a normalizer, capture goldens with the Ruby one
+first (`rake golden:dump[<provider>]`) and add a parity test, as ING,
+Revolut and Unicaja did.
+
+### A capture finds "no matching response was seen"
+
+The page never made that request during the run — usually a click that
+landed before the page became interactive (hydration), or a `navigate`
+where an in-app click was needed. See freentonic's
+[capturing data from a web app's own responses](https://github.com/GermanDZ/freentonic/blob/main/docs/workflow-action-capture-response-json.md#capturing-data-from-a-web-apps-own-responses).
 
 ### The HTTP exporter returns 404 on a URL with a path
 
@@ -607,7 +653,7 @@ declaratively yet**. Examples:
 
 **When you hit one of these, do NOT solve it by writing custom Ruby
 inside the provider directory.** A provider that monkey-patches the
-framework or shells out from `extractor.rb` to do "framework-ish"
+framework or reaches for provider Ruby to do "framework-ish"
 work is a bug — it bypasses the security invariants, the test suite,
 and the shared API that keeps providers interoperable.
 
@@ -621,18 +667,18 @@ to ship a limited workaround explicitly).
 
 You are probably looking at a framework gap if any of these are true:
 
-- Your provider's `extractor.rb` is more than ~80 lines and most of
-  it is plumbing (HTTP, retries, auth signing, parsing), not
-  provider-specific logic.
+- No combination of plan verbs and `apply:` functions expresses a
+  step — you'd need imperative control flow, request signing, or a
+  transformation no registered function performs.
 - You'd need to `require "net/http"` (or similar) directly in a
   provider file and reimplement something `Freentonic::ApiClient`
   almost-but-not-quite does.
 - You'd need a step in `workflow.yml` whose `action:` value doesn't
   exist in `../freentonic/lib/freentonic/browser_workflow_runner.rb`
   and no existing action composes to what you need.
-- The capability would be useful to **more than one** provider. If
-  only your provider would ever use it, it might belong in
-  `extractor.rb` after all — ask the user.
+- The capability would be useful to **more than one** provider. Even
+  if only yours needs it, provider Ruby is refused on declarative-only
+  servers, so it still needs a framework change — ask the user.
 - You find yourself wanting to call a private method of a framework
   class.
 
@@ -669,7 +715,7 @@ because `<explain the gap in one sentence>`.
 
 At least `<N>` providers are likely to need this (provided examples:
 `<provider-a>`, `<provider-b>`, …) so it belongs in the framework
-rather than in any one provider's extractor.
+rather than in any one provider.
 
 ## Proposed declarative shape
 
@@ -697,7 +743,7 @@ api_client:
 ## Alternative considered
 
 `<What else I thought about and why I rejected it.>` Usually one of:
-composing existing actions, moving the logic into `extractor.rb`,
+composing existing actions or plan verbs,
 adding a new exporter instead of a workflow action, etc.
 
 ## Security considerations
@@ -794,7 +840,7 @@ should weigh in before you draft the PR.
   to the framework repo from inside freentonic-providers.
 - **Do not commit a workaround to the provider while you wait.** If
   the user explicitly authorizes a temporary workaround (e.g. "ship
-  an extractor.rb hack now, remove it when the PR lands"), add a
+  a provider-Ruby hack now, remove it when the PR lands"), add a
   `TODO(upstream #<issue>):` comment next to the hack so it's easy
   to find and remove later.
 - **Once the upstream PR merges, the provider still waits for a
@@ -819,9 +865,9 @@ Stop and ask the user — don't guess — when you hit any of:
   handle it.
 - The provider returns an error response you don't recognize, and
   retrying with the same cookies reproduces it.
-- You've iterated on the normalizer three times and the shape still
+- You've iterated on the normalize plan three times and the shape still
   doesn't match what you expected — you're probably wrong about the
-  API, not the normalizer.
+  API, not the plan.
 - A test requires a fixture larger than ~30 lines. That's a sign
   you're testing too much; break it up or ask which case is most
   valuable.
@@ -837,12 +883,12 @@ Stop and ask the user — don't guess — when you hit any of:
 
 A provider is ready to ship when **all** of these are true:
 
-- [ ] `<provider>/workflow.yml` parses through
-      `Freentonic::WorkflowSchema.load` without raising.
-- [ ] `<provider>/extractor.rb` is present and handles per-product
-      errors gracefully.
-- [ ] `<provider>/normalizer.rb` is present and emits the universal
-      payload shape.
+- [ ] `freentonic --lint --workflow <provider>/workflow.yml` is clean.
+- [ ] Extract and normalize are both plans — no `ruby:` stage, no
+      `api_client.ext`, no `.rb` file outside `test/`.
+- [ ] The extract plan isolates per-product failures (`safe:` /
+      `on_error: warn`) and aborts when an essential fetch or value is
+      missing.
 - [ ] `bundle exec rake test:<provider>` is green.
 - [ ] `bundle exec rake test` (full suite) is green — you haven't
       broken any other provider.
@@ -870,9 +916,11 @@ unless they've explicitly told you otherwise.
 | How do I get a HAR capture from the user?    | "Getting a HAR capture from the user" section above     |
 | I need a new action / exporter / backend — what now? | "Proposing new framework capabilities" section above |
 | What does the workflow YAML look like?       | `docs/creating-a-provider.md` § 2                       |
-| What does an extractor look like?            | `ing/extractor.rb`, `unicaja/extractor.rb`              |
-| What does a normalizer look like?            | `ing/normalizer.rb`, `unicaja/normalizer.rb`            |
-| What does a test look like?                  | `ing/test/ing_normalizer_test.rb`                       |
+| What does an extract plan look like?         | `unicaja/workflow.yml`, `ing/workflow.yml` (`extract: plan:`) |
+| What does a normalize plan look like?        | `revolut/workflow.yml`, `ing/workflow.yml` (`normalize: plan:`) |
+| A provider with no usable API?               | `n26/workflow.yml` (`captured:` + capture actions)      |
+| What does a test look like?                  | `unicaja/test/unicaja_extract_plan_test.rb`, `ing/test/ing_normalizer_test.rb` |
+| Plan verbs and `apply:` functions            | freentonic `docs/extract-plan.md`, `docs/normalize-plan.md`, or `freentonic --schema-json` |
 | What workflow actions exist?                 | `../freentonic/lib/freentonic/browser_workflow_runner.rb` (search `case action`) |
 | How does the HTTP client DSL work?           | `../freentonic/lib/freentonic/api_client.rb`            |
 | How are credentials validated/mapped?        | `../freentonic/lib/freentonic/source.rb`                |

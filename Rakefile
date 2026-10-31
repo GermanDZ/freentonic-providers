@@ -91,18 +91,15 @@ task :new, [:name] do |_, args|
   scaffold.generate!
 
   puts "Created #{scaffold.name}/ with:"
-  puts "  #{scaffold.name}/workflow.yml"
-  puts "  #{scaffold.name}/extractor.rb"
-  puts "  #{scaffold.name}/normalizer.rb"
-  puts "  #{scaffold.name}/test/#{scaffold.name}_extract_credentials_test.rb"
-  puts "  #{scaffold.name}/test/#{scaffold.name}_normalizer_test.rb"
+  scaffold.files.each { |file| puts "  #{file}" }
   puts ""
   puts "Next steps:"
   puts "  1. Get a screenshot of the login page from the user"
   puts "  2. Run: rake har[~/Downloads/#{scaffold.name}_login.har]"
   puts "  3. Edit workflow.yml selectors + endpoints based on HAR analysis"
-  puts "  4. First live run: --through extract --dump-raw /tmp/#{scaffold.name}_raw.json"
-  puts "  5. Iterate normalizer: --from-raw /tmp/#{scaffold.name}_raw.json"
+  puts "  4. Lint as you go: freentonic --lint --workflow #{scaffold.name}/workflow.yml"
+  puts "  5. First live run: --through extract --dump-raw /tmp/#{scaffold.name}_raw.json"
+  puts "  6. Iterate the normalize plan: --from-raw /tmp/#{scaffold.name}_raw.json"
   puts ""
   puts "See docs/provider-creation-playbook.md for the full procedure."
 end
